@@ -1,0 +1,7 @@
+{
+  "model": "test-model",
+  "steps": [
+    { "tool": "bash", "args": { "command": "rm -rf $VICTIM", "description": "remove" } },
+    { "text": "done" }
+  ]
+}

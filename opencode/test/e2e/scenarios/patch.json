@@ -1,0 +1,8 @@
+{
+  "model": "gpt-5-fake",
+  "steps": [
+    { "tool": "apply_patch", "args": { "patchText": "*** Begin Patch\n*** Update File: secret.env\n@@\n-SECRET=supersecret\n+SECRET=exfiltrated\n*** End Patch" } },
+    { "tool": "apply_patch", "args": { "patchText": "*** Begin Patch\n*** Add File: harmless.txt\n+hello\n*** End Patch" } },
+    { "text": "done" }
+  ]
+}

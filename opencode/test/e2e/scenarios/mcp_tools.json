@@ -1,0 +1,8 @@
+{
+  "model": "test-model",
+  "steps": [
+    { "tool": "armor1_test_echo_text",   "args": { "text": "hello from mcp" } },
+    { "tool": "armor1_test_delete_thing", "args": { "target": "/etc/passwd", "force": true } },
+    { "text": "done" }
+  ]
+}

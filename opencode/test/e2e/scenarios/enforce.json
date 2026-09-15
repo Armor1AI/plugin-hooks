@@ -1,0 +1,13 @@
+{
+  "model": "test-model",
+  "steps": [
+    { "tool": "bash",     "args": { "command": "rm -rf $VICTIM", "description": "remove" } },
+    { "tool": "bash",     "args": { "command": "echo hello-allowed", "description": "echo" } },
+    { "tool": "read",     "args": { "filePath": "$WORK/secret.env" } },
+    { "tool": "read",     "args": { "filePath": "$WORK/notes.txt" } },
+    { "tool": "write",    "args": { "filePath": "$WORK/allowed.txt", "content": "written" } },
+    { "tool": "webfetch", "args": { "url": "http://127.0.0.1:18473/page", "format": "text" } },
+    { "tool": "webfetch", "args": { "url": "https://evil.example/x", "format": "text" } },
+    { "text": "done" }
+  ]
+}

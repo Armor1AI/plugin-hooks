@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+test/e2e/.rig/
+test/e2e/.last-*.log
+claude/
+.DS_Store

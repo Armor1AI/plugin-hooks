@@ -1,0 +1,7 @@
+{
+  "model": "test-model",
+  "steps": [
+    { "tool": "task", "args": { "description": "sub task", "prompt": "do a small thing", "subagent_type": "general" } },
+    { "text": "done" }
+  ]
+}
