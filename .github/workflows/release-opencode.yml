@@ -9,6 +9,9 @@ on:
       - publish
     paths:
       - "opencode/**"
+  # Manual trigger for a first release or a re-run after a CI fix, when no
+  # opencode/ change is in the push to satisfy the path filter above.
+  workflow_dispatch:
 
 permissions:
   contents: write          
