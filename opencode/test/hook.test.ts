@@ -5,9 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { candidates, currentBuildDir, parseConfig, parseDecision } from "../src/hook.ts"
 
-// ---------------------------------------------------------------------------
 // Reading policies.json
-// ---------------------------------------------------------------------------
 
 const policy = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -115,9 +113,7 @@ test("malformed input is reported as invalid", () => {
   assert.equal((parseConfig("{}", candidate()) as { kind: string }).kind, "invalid")
 })
 
-// ---------------------------------------------------------------------------
 // Reading the hook's answer
-// ---------------------------------------------------------------------------
 
 test("parses the primary deny shape", () => {
   const d = parseDecision('{"decision":"deny","reason":"nope"}', 0)

@@ -19,25 +19,59 @@ import { type McpResolution, resolveMcpTool, scanPatch, toAbsolute } from "./nor
 // ---------------------------------------------------------------------------
 // Routing a tool call to a policy section
 // ---------------------------------------------------------------------------
-
-const ENFORCE_BY_TOOL: Readonly<Record<string, EnforceSection>> = {
-  bash: "command_execution",
-  read: "file_access_read",
-  write: "file_access_write",
-  edit: "file_access_write",
-  apply_patch: "file_access_write",
-  webfetch: "network_access",
-  websearch: "network_access",
+// Per-API tool tables; routing V1 names under V2 would silently unenforce command exec.
+export interface ToolTables {
+  readonly enforce: Readonly<Record<string, EnforceSection>>
+  readonly telemetry: Readonly<Record<string, PostToolSection>>
 }
 
-// Reads have no post section. Nothing changed, so there is nothing to report after.
-const TELEMETRY_BY_TOOL: Readonly<Record<string, PostToolSection>> = {
-  bash: "post_shell_execution",
-  write: "post_write_file",
-  edit: "post_write_file",
-  apply_patch: "post_write_file",
-  webfetch: "post_network_access",
-  websearch: "post_network_access",
+// Reads have no post section: nothing changed to report.
+export const V1_TOOLS: ToolTables = {
+  enforce: {
+    bash: "command_execution",
+    read: "file_access_read",
+    write: "file_access_write",
+    edit: "file_access_write",
+    apply_patch: "file_access_write",
+    webfetch: "network_access",
+    websearch: "network_access",
+  },
+  telemetry: {
+    bash: "post_shell_execution",
+    write: "post_write_file",
+    edit: "post_write_file",
+    apply_patch: "post_write_file",
+    webfetch: "post_network_access",
+    websearch: "post_network_access",
+  },
+}
+
+// `execute` runs model-authored TypeScript in a sandbox with no fs, process or network.
+// Routed as command execution because the code string is what a policy needs to see.
+export const V2_TOOLS: ToolTables = {
+  enforce: {
+    shell: "command_execution",
+    execute: "command_execution",
+    read: "file_access_read",
+    write: "file_access_write",
+    edit: "file_access_write",
+    // V2's name for apply_patch. Same patchText envelope; the only write tool GPT models
+    // get, so missing it means no write coverage.
+    apply_patch: "file_access_write",
+    patch: "file_access_write",
+    webfetch: "network_access",
+    websearch: "network_access",
+  },
+  telemetry: {
+    shell: "post_shell_execution",
+    execute: "post_shell_execution",
+    write: "post_write_file",
+    edit: "post_write_file",
+    apply_patch: "post_write_file",
+    patch: "post_write_file",
+    webfetch: "post_network_access",
+    websearch: "post_network_access",
+  },
 }
 
 export type Classification =
@@ -45,8 +79,12 @@ export type Classification =
   | { readonly kind: "builtin"; readonly section: EnforceSection }
   | { readonly kind: "mcp"; readonly section: "mcp"; readonly resolution: McpResolution }
 
-export function classify(toolId: string, mcpServers: readonly string[]): Classification {
-  const builtin = ENFORCE_BY_TOOL[toolId]
+export function classify(
+  toolId: string,
+  mcpServers: readonly string[],
+  tools: ToolTables = V1_TOOLS,
+): Classification {
+  const builtin = tools.enforce[toolId]
   if (builtin !== undefined) return { kind: "builtin", section: builtin }
 
   const resolution = resolveMcpTool(toolId, mcpServers)
@@ -60,8 +98,12 @@ export type AfterClassification =
   | { readonly kind: "builtin"; readonly section: PostToolSection }
   | { readonly kind: "mcp"; readonly section: "post_mcp"; readonly resolution: McpResolution }
 
-export function classifyAfter(toolId: string, mcpServers: readonly string[]): AfterClassification {
-  const builtin = TELEMETRY_BY_TOOL[toolId]
+export function classifyAfter(
+  toolId: string,
+  mcpServers: readonly string[],
+  tools: ToolTables = V1_TOOLS,
+): AfterClassification {
+  const builtin = tools.telemetry[toolId]
   if (builtin !== undefined) return { kind: "builtin", section: builtin }
 
   const resolution = resolveMcpTool(toolId, mcpServers)
@@ -82,7 +124,7 @@ export interface BuildContext {
   readonly cwd: string
 }
 
-// Prompt, session and usage events fire outside any tool call, so no tool or call id.
+// Prompt, session and usage events fire outside any tool call: no tool or call id.
 export type SessionContext = Omit<BuildContext, "tool" | "callID">
 
 export interface BuildResult<S> {
@@ -99,11 +141,12 @@ function str(args: Readonly<Record<string, unknown>>, ...keys: readonly string[]
   return undefined
 }
 
-// Accept every known spelling. If OpenCode renames an argument, file-write enforcement
-// must not silently stop matching.
+// Accept every spelling, so an argument rename does not silently stop matching.
 const FILE_PATH_KEYS = ["filePath", "file_path", "path", "file"] as const
 const PATCH_KEYS = ["patchText", "patch", "diff"] as const
-const COMMAND_KEYS = ["command", "cmd"] as const
+// `code` is the execute tool's argument (a TS program). Without it the policy sees an
+// empty command and every code-mode call passes unexamined.
+const COMMAND_KEYS = ["command", "cmd", "code"] as const
 const OLD_STRING_KEYS = ["oldString", "old_string"] as const
 const NEW_STRING_KEYS = ["newString", "new_string"] as const
 const URL_KEYS = ["url"] as const
@@ -144,8 +187,8 @@ function toolPayload(
   }
 }
 
-// The call arguments go in tool_input directly, because the policy counts their keys and
-// bytes. The full tool id stays at the top level.
+// Args go in tool_input (the policy counts their keys and bytes); the full tool id stays
+// at the top level.
 function mcpAnnotations(ctx: BuildContext, section: "mcp" | "post_mcp", resolution: McpResolution): PayloadAnnotations {
   return {
     section,
@@ -156,13 +199,13 @@ function mcpAnnotations(ctx: BuildContext, section: "mcp" | "post_mcp", resoluti
   }
 }
 
-// One list of paths a write touches, so the before and after sections always agree.
+// One list of paths a write touches, so before and after sections agree.
 function writeTargets(
   ctx: BuildContext,
   section: EnforceSection | TelemetrySection,
   args: Readonly<Record<string, unknown>>,
 ): { inputs: Record<string, unknown>[]; annotations: PayloadAnnotations[]; signals: Signal[] } {
-  if (ctx.tool !== "apply_patch") {
+  if (ctx.tool !== "apply_patch" && ctx.tool !== "patch") {
     const filePath = str(args, ...FILE_PATH_KEYS)
     if (filePath === undefined) return { inputs: [], annotations: [], signals: [] }
 
@@ -177,8 +220,7 @@ function writeTargets(
     return { inputs: [input], annotations: [{ section, opencode_tool: ctx.tool }], signals: [] }
   }
 
-  // apply_patch has no file path argument: every target is inside the patch text. It is
-  // also the only write tool on GPT-class models, so missing this means no coverage there.
+  // apply_patch has no file path argument; every target is inside the patch text.
   const scan = scanPatch(str(args, ...PATCH_KEYS) ?? "")
   const inputs: Record<string, unknown>[] = []
   const annotations: PayloadAnnotations[] = []

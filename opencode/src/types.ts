@@ -25,8 +25,7 @@ export type TelemetrySection =
   | "model_token_usage_subagent"
 export type Section = EnforceSection | TelemetrySection
 
-// The telemetry sections a builtin tool's after-hook can produce. MCP tools and the
-// session-level sections are handled separately.
+// Telemetry sections a builtin after-hook can produce. MCP and session-level are separate.
 export type PostToolSection = Exclude<
   TelemetrySection,
   | "post_mcp"
@@ -136,10 +135,10 @@ export type HookPayload =
 // ---------------------------------------------------------------------------
 
 export type Decision =
-  // An allow may carry a note for the model. It is appended to the tool result.
+  // An allow may carry a note, appended to the tool result.
   | { readonly kind: "allow"; readonly context?: string }
   | { readonly kind: "deny"; readonly reason: string }
-  // Carries the signal so callers never have to infer it from the reason text.
+  // Carries the signal so callers need not infer it from the reason text.
   | { readonly kind: "degraded"; readonly signal: Signal; readonly reason: string }
 
 export type Signal =
@@ -151,6 +150,7 @@ export type Signal =
   | "hook_ask_downgraded"
   | "adapter_exception"
   | "mcp_ambiguous"
+  | "mcp_code_dynamic"
   | "patch_unparseable"
 
 // ---------------------------------------------------------------------------

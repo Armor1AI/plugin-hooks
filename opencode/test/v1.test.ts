@@ -1,10 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { Armor1Plugin, createLedger, modelName } from "../src/index.ts"
+import { Armor1Plugin } from "../src/v1.ts"
+import { createLedger, modelName } from "../src/runtime.ts"
 
-// ---------------------------------------------------------------------------
 // Token ledger
-// ---------------------------------------------------------------------------
 
 const message = (over: Record<string, unknown> = {}) => ({
   id: "msg_1",
@@ -104,15 +103,11 @@ test("flushing an unknown session is safe", () => {
   assert.deepEqual(createLedger().flush("nope"), [])
 })
 
-// ---------------------------------------------------------------------------
 // Nothing may throw
-// ---------------------------------------------------------------------------
 
-// The adapter must never surface an exception except a deliberate policy denial.
-// OpenCode cannot tell a crash apart from a deny in tool.execute.before, and an
-// exception in chat.message lands in the user's prompt path.
-// Point the normal resolution at a home that cannot exist, so the test is deterministic
-// regardless of whether the machine has an armor1 install.
+// The adapter must never throw except a deliberate denial: OpenCode cannot tell a
+// crash from a deny in tool.execute.before.
+// Point resolution at a home that cannot exist, so the test is deterministic.
 const load = () => {
   process.env["ARMOR1_HOME"] = "/nonexistent/armor1"
   return Armor1Plugin({ directory: "/work" })

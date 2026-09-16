@@ -5,8 +5,7 @@ import type { PatchOp } from "./types.ts"
 // ---------------------------------------------------------------------------
 // Untrusted input
 // ---------------------------------------------------------------------------
-// Values the plugin does not control: hook stdout, policies.json, and OpenCode's own
-// event payloads.
+// Values the plugin does not control: hook stdout, policies.json, event payloads.
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -45,8 +44,8 @@ export function toAbsolute(value: string, cwd: string): string {
 // MCP tool ids
 // ---------------------------------------------------------------------------
 
-// A tool id is server + "_" + tool, both with odd characters replaced by "_", so splitting
-// on "_" cannot tell them apart. Match against the servers actually configured.
+// A V1 id is sanitize(server) + "_" + sanitize(tool), so splitting on "_" is ambiguous;
+// match against the configured servers instead.
 
 export type McpResolution =
   | { readonly kind: "none" }
@@ -69,7 +68,7 @@ export function resolveMcpTool(toolId: string, servers: readonly string[]): McpR
 
   if (matches.length === 0) return { kind: "none" }
 
-  // Prefer the longest server prefix; only genuinely equal-length prefixes are ambiguous.
+  // Prefer the longest server prefix; only equal-length prefixes are ambiguous.
   let longest = matches[0]!
   for (const candidate of matches) {
     if (sanitize(candidate.server).length > sanitize(longest.server).length) longest = candidate
@@ -104,8 +103,8 @@ const DELETE = "*** Delete File:"
 const UPDATE = "*** Update File:"
 const MOVE = "*** Move to:"
 
-// Scans every line for a header rather than skipping hunk bodies. Finding one path too
-// many costs an extra check; missing one lets a write through unchecked.
+// Scans every line for a header: an extra path costs a check, a missed one lets a write
+// through unchecked.
 export function scanPatch(patchText: string): PatchScan {
   const lines = patchText.split(/\r?\n/)
   const begin = lines.findIndex((line) => line.trim() === BEGIN)

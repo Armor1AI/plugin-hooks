@@ -2,9 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { build, buildAfter, buildError, buildPrompt, buildSessionStart, buildStop, classify, classifyAfter } from "../src/event.ts"
 
-// ---------------------------------------------------------------------------
 // Routing
-// ---------------------------------------------------------------------------
 
 test("maps the five enforcement surfaces", () => {
   assert.deepEqual(classify("bash", []), { kind: "builtin", section: "command_execution" })
@@ -55,9 +53,7 @@ test("mcp tools map to post_mcp when the server is configured", () => {
   assert.equal(after("github_create_issue"), undefined)
 })
 
-// ---------------------------------------------------------------------------
 // Shaping
-// ---------------------------------------------------------------------------
 
 const ctx = { tool: "bash", sessionID: "ses_1", turnID: "msg_1", callID: "call_1", cwd: "/work" }
 

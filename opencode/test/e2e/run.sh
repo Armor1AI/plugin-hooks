@@ -199,6 +199,98 @@ if want "subagent"; then
   check "subagent scope tagged" "$(grep '^model_token_usage_subagent|' "$RIG/hook.log" | grep -c '"scope":"subagent"')" "1"
 fi
 
+
+# --- V2 ------------------------------------------------------------------------
+# opencode 2.x (`@opencode/cli`) is a different binary with an incompatible plugin
+# API. Three things differ from the V1 runner, all learned the hard way:
+#   * `--standalone` is mandatory. Otherwise V2 uses a machine-global background
+#     service which answers for whatever config it started with, ignoring ours.
+#   * config goes in a real opencode.json. OPENCODE_CONFIG_CONTENT does not
+#     register MCP servers on V2, and a stale service made that look intermittent.
+#   * never delete the state dir mid-run: V2 keeps opencode.db there.
+# Set OPENCODE_V2_BIN to the 2.x binary; the pass is skipped when it is unset.
+run_opencode_v2() {
+  local scenario="$1" model="$2"
+  sed -e "s|\$WORK|$RIG/work|g" -e "s|\$VICTIM|/tmp/armor1-e2e-victim|g" \
+    "$HERE/scenarios/$scenario.json" > "$RIG/scenario.json"
+
+  SCENARIO="$RIG/scenario.json" PORT=$PORT MESSAGES_FILE="$RIG/messages.log" \
+    nohup node "$HERE/${LLM_SERVER:-fake-llm.mjs}" > "$RIG/llm.log" 2>&1 < /dev/null &
+  local llm=$!
+  disown $llm 2>/dev/null
+  sleep 1
+
+  mkdir -p "$RIG/home/.config/opencode"
+  cat > "$RIG/home/.config/opencode/opencode.json" <<EOF
+{"\$schema":"https://opencode.ai/config.json","model":"test/$model",
+ "provider":{"test":{"name":"Test","id":"test","env":[],"npm":"@ai-sdk/openai-compatible",
+ "models":{"$model":{"id":"$model","name":"T","attachment":false,"reasoning":false,
+ "temperature":false,"tool_call":true}},
+ "options":{"apiKey":"k","baseURL":"http://127.0.0.1:$PORT/v1"}}}}
+EOF
+
+  ( cd "$RIG/work" && env -i PATH="$PATH" \
+      HOME="$RIG/home" \
+      XDG_CONFIG_HOME="$RIG/home/.config" XDG_DATA_HOME="$RIG/home/.local/share" \
+      XDG_STATE_HOME="$RIG/home/.local/state" XDG_CACHE_HOME="$RIG/home/.cache" \
+      ARMOR1_HOME="$RIG/armor1" ARMOR1_E2E_HOOK_LOG="$RIG/hook.log" \
+      ${HOOK_SLEEP:+ARMOR1_E2E_HOOK_SLEEP=$HOOK_SLEEP} \
+      "$OPENCODE_V2_BIN" run --standalone --auto "do the tasks" ) > "$RIG/out.log" 2>&1 < /dev/null &
+  local oc=$!
+  ( sleep 120; kill -9 $oc 2>/dev/null ) >/dev/null 2>&1 & local watch=$!
+  disown $watch 2>/dev/null
+  wait $oc; local code=$?
+  kill $watch $llm 2>/dev/null
+  cp "$RIG/hook.log" "$HERE/.last-$scenario.log" 2>/dev/null
+  return $code
+}
+
+if [[ -n "${OPENCODE_V2_BIN:-}" ]]; then
+  if want "v2_enforce"; then
+    echo "=== V2 scenario: enforcement across every section ==="
+    setup; write_config "$HERE/hook-stub.sh"
+    run_opencode_v2 v2_enforce test-model
+    check "session completed" "$?" "0"
+    check "rm -rf blocked, canary survives" "$([ -f /tmp/armor1-e2e-victim/canary.txt ] && echo yes || echo no)" "yes"
+    check "shell routes to command_execution (not bash)" "$(grep -c '^command_execution|' "$RIG/hook.log")" "2"
+    check "allowed echo reached the model" "$([ "$(grep -c 'hello-allowed' "$RIG/messages.log")" -ge 1 ] && echo yes || echo no)" "yes"
+    check "allow-side context reached the model" "$([ "$(grep -c 'Armor1 note' "$RIG/messages.log")" -ge 1 ] && echo yes || echo no)" "yes"
+    check "secret.env read blocked" "$(grep -c 'reading secrets is blocked' "$RIG/out.log")" "1"
+    check "network deny enforced" "$(grep -c 'domain blocked' "$RIG/out.log")" "1"
+    check "session_start fired once" "$(grep -c '^session_start|' "$RIG/hook.log")" "1"
+    check "prompt telemetry fired once" "$(grep -c '^before_submit_prompt|' "$RIG/hook.log")" "1"
+    check "post_shell_execution only for the allowed command" "$(grep -c '^post_shell_execution|' "$RIG/hook.log")" "1"
+  fi
+  if want "v2_codemode"; then
+    echo "=== V2 scenario: code mode is a command-execution surface ==="
+    setup; write_config "$HERE/hook-stub.sh"
+    run_opencode_v2 v2_codemode test-model
+    check "session completed" "$?" "0"
+    check "execute routes to command_execution" "$(grep -c '^command_execution|' "$RIG/hook.log")" "1"
+    # the silent hole: execute names its argument `code`, so reading only
+    # command/cmd handed the policy an empty string while the section looked fine
+    check "the code itself reached the policy" "$(grep '^command_execution|' "$RIG/hook.log" | grep -c '"command":"1 + 1"')" "1"
+    check "post_shell_execution fired" "$(grep -c '^post_shell_execution|' "$RIG/hook.log")" "1"
+  fi
+  if want "v2_tokens"; then
+    echo "=== V2 scenario: per-turn token usage ==="
+    setup; write_config "${SPY:-$HERE/hook-stub.sh}"
+    run_opencode_v2 v2_tokens test-model
+    check "session completed" "$?" "0"
+    check "model_token_usage fired" "$([ "$(grep -c '^model_token_usage|' "$RIG/hook.log")" -ge 1 ] && echo yes || echo no)" "yes"
+    check "not attributed to a subagent" "$(grep -c '^model_token_usage_subagent|' "$RIG/hook.log")" "0"
+    check "input tokens are non-zero" "$(grep '^model_token_usage|' "$RIG/hook.log" | grep -c '"input_tokens":[1-9]')" "1"
+    check "cache read carried through" "$(grep '^model_token_usage|' "$RIG/hook.log" | grep -c '"cache_read_input_tokens":[1-9]')" "1"
+    check "stop fired" "$(grep -c '^stop|' "$RIG/hook.log")" "1"
+  fi
+  if want "v2_failure"; then
+    echo "=== V2 scenario: stop_failure from a provider error ==="
+    setup; write_config "$HERE/hook-stub.sh"
+    run_opencode_v2 v2_failure test-model
+    check "stop_failure telemetry fired" "$(grep -c '^stop_failure|' "$RIG/hook.log")" "1"
+  fi
+fi
+
 pkill -f "e2e/fake-llm.mjs" 2>/dev/null
 rm -rf /tmp/armor1-e2e-victim
 echo

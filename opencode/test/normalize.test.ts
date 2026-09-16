@@ -2,9 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { resolveMcpTool, sanitize, scanPatch } from "../src/normalize.ts"
 
-// ---------------------------------------------------------------------------
 // MCP tool ids
-// ---------------------------------------------------------------------------
 
 test("sanitize matches OpenCode's rule", () => {
   assert.equal(sanitize("my.server@1"), "my_server_1")
@@ -46,9 +44,7 @@ test("does not match a bare server name with no tool suffix", () => {
   assert.deepEqual(resolveMcpTool("github_", ["github"]), { kind: "none" })
 })
 
-// ---------------------------------------------------------------------------
 // Patch bodies
-// ---------------------------------------------------------------------------
 
 test("extracts add, update and delete targets", () => {
   const scan = scanPatch(

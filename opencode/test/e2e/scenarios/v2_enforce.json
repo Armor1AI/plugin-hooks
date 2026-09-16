@@ -1,0 +1,41 @@
+{
+ "model": "test-model",
+ "steps": [
+  {
+   "tool": "shell",
+   "args": {
+    "command": "rm -rf $VICTIM",
+    "description": "destructive"
+   }
+  },
+  {
+   "tool": "shell",
+   "args": {
+    "command": "echo hello-allowed",
+    "description": "allowed"
+   }
+  },
+  {
+   "tool": "read",
+   "args": {
+    "path": "$WORK/secret.env"
+   }
+  },
+  {
+   "tool": "read",
+   "args": {
+    "path": "$WORK/notes.txt"
+   }
+  },
+  {
+   "tool": "webfetch",
+   "args": {
+    "url": "https://evil.example/x",
+    "format": "text"
+   }
+  },
+  {
+   "text": "done"
+  }
+ ]
+}

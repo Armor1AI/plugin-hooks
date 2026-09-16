@@ -1,0 +1,14 @@
+{
+ "model": "test-model",
+ "steps": [
+  {
+   "tool": "execute",
+   "args": {
+    "code": "1 + 1"
+   }
+  },
+  {
+   "text": "done"
+  }
+ ]
+}

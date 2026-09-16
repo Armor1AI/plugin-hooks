@@ -1,0 +1,11 @@
+{
+ "model": "test-model",
+ "steps": [
+  {
+   "httpError": 401
+  },
+  {
+   "text": "done"
+  }
+ ]
+}

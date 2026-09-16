@@ -13,7 +13,7 @@ equivalent of the `hooks_install` entry other clients get.
 Claude Code and OpenCode extend in completely different ways, and that difference explains
 every design choice below.
 
-**Claude Code** spawns your hook as a **separate process**: JSON on stdin, decision on
+**Claude Code** spawns the hook as a **separate process**: JSON on stdin, decision on
 stdout, exit code for allow or block. Claude Code owns that protocol.
 
 **OpenCode** spawns nothing. It **imports this plugin into its own process** at startup and
@@ -31,30 +31,45 @@ flowchart TD
     C --> D[Spawn hooks.sh, JSON on stdin]
     D --> E{Decision on stdout}
 
-    E -- deny --> F[Throw the reason]
-    F --> X[Tool never runs. Model reads the reason]
+    E -- deny --> F[Throw the reason: tool is blocked]
+    F --> X[Tool never runs. Model reads why it was blocked]
 
     E -- allow --> RUN
-    E -- allow with a note --> G[Hold the note for this call]
+    E -- allow, plus a message for the model --> G[Save the message until the tool finishes]
     G --> RUN
-    E -- error, timeout, bad output --> H[Record a signal, never block]
+    E -- plugin-side error: timeout or bad output --> H[Record a signal, allow anyway]
     H --> RUN
 
-    RUN --> I[after hook]
-    I --> J[Append any held note to the result]
-    J --> K[Send telemetry, decision ignored]
+    RUN --> I[after hook: tool has finished]
+    I --> J[Attach the saved message, if any, to the result]
+    J --> K[Send telemetry, no decision here]
     K --> L[Model reads the result]
 ```
 
 Only the deny branch throws. Every failure on the plugin's side lands in the same place as
 an allow.
 
-### Who decides what
+---
 
-| Decided by | What |
-|---|---|
-| OpenCode | which hook functions exist, that throwing aborts a call, that the after hook's output is what the model reads, and that there is no timeout |
-| This plugin | the event JSON, the flags passed to `hooks.sh`, how its answer is read, and what happens on error |
+## One bundle, two OpenCode lines
+
+OpenCode ships as two separate packages with different plugin APIs: `opencode-ai` (the 1.x
+"V1" line) and `@opencode/cli` (the 2.x "V2" line). This plugin serves both from one file.
+`index.ts` default-exports `{ id, setup, server }`; **V1 calls `server()`, V2 reads `setup`,
+and each runtime ignores the other half.**
+
+The two differ only at the edges, so most of the code is shared:
+
+| | V1 | V2 |
+|---|---|---|
+| registration | `server()` returning a hooks object | `setup()` registering `ctx.*.hook` |
+| command tool | `bash` | `shell`, plus `execute` (code mode) |
+| write tool | `apply_patch` | `patch` |
+| MCP call | a tool id reaching the hook | only inside `execute` code, read from the program text |
+| token usage | running total per message, delta computed here | per-step deltas off the event bus |
+
+Everything version-agnostic (event shaping, the `hooks.sh` bridge, payload builders) is
+shared verbatim; only registration and the tool-routing table differ.
 
 ---
 
@@ -62,14 +77,14 @@ an allow.
 
 Fifteen of the eighteen sections other clients install.
 
-| Section | Type | Fires on |
+| Section | Type | Fires on (V1 / V2) |
 |---|---|---|
-| `command_execution` | enforcement | `bash` |
+| `command_execution` | enforcement | `bash` / `shell`, `execute` |
 | `file_access_read` | enforcement | `read` |
-| `file_access_write` | enforcement | `write`, `edit`, `apply_patch` |
+| `file_access_write` | enforcement | `write`, `edit`, `apply_patch` / `patch` |
 | `network_access` | enforcement | `webfetch`, `websearch` |
-| `mcp` | enforcement | any MCP tool |
-| `post_shell_execution` | telemetry | `bash`, after it runs |
+| `mcp` | enforcement | an MCP tool id / an MCP call parsed from `execute` code |
+| `post_shell_execution` | telemetry | command tools, after they run |
 | `post_write_file` | telemetry | write tools, after they run |
 | `post_network_access` | telemetry | web tools, after they run |
 | `post_mcp` | telemetry | MCP tools, after they run |
@@ -83,59 +98,72 @@ Fifteen of the eighteen sections other clients install.
 Enforcement sections can block a call. Telemetry sections only report.
 
 Not built: `subagent_start`, `subagent_stop`, and `session_end`, which has no OpenCode
-equivalent at all.
+equivalent.
+
+### MCP on V2 is code-mode only
+
+V2 exposes MCP tools only inside the `execute` tool, as model-written TypeScript like
+`await tools["notion-server"]["API-get-self"]()`. No MCP id reaches the hook, so the plugin
+reads the server and tool out of the program text and gates them as `mcp`. Only literal keys
+parse; a name built at runtime (`tools[name]`) yields no call, is flagged, and is allowed
+rather than blocked, since denying unparseable code would reject ordinary programs. The code
+still passes through `command_execution` regardless.
 
 ---
 
 ## Design rules
 
-These are the non-obvious ones. Each exists because of something OpenCode does.
+These are the non-obvious rules. Each follows from a specific OpenCode behavior.
 
-**One throw site.** A crash looks exactly like a policy denial to OpenCode, so a bug that
-throws would silently deny the user's work. Every hook body is wrapped; only an explicit
-deny throws. `test/index.test.ts` drives every hook with malformed input and asserts none of
-them reject.
+**One throw site.** A crash looks exactly like a policy denial, so a bug that throws would
+silently deny the user's work. Every hook body is wrapped; only an explicit deny throws. True
+on both lines: a throw in either the before or after hook aborts the call.
 
 **Failures never block.** A missing hook script, a timeout, unreadable output, or a bug all
-resolve to allow. Missing enforcement is meant to be caught centrally by absent telemetry,
-not by blocking someone's work.
+resolve to allow. Missing enforcement is caught centrally by absent telemetry, not by
+blocking the user's work.
 
-**Own the timeout.** OpenCode waits forever for a plugin hook. The plugin enforces 10
-seconds itself, matching what other clients declare, and treats expiry as allow.
+**Own the timeout.** OpenCode waits forever for a plugin hook. The plugin enforces 10 seconds
+itself, matching what other clients declare, and treats expiry as allow.
 
 **Never block the event loop.** The plugin runs inside OpenCode's process, so the hook is
-spawned asynchronously. A synchronous spawn would stall every other session.
+spawned asynchronously and detached; a synchronous spawn would stall every other session.
 
-**A denial must explain itself.** The `reason` from the matching policy rule is what gets
-thrown, and it reaches the model verbatim as the tool result. An allow can carry a note too,
-appended to the tool result, since the after hook's output is the object OpenCode hands back.
+**A denial must explain itself.** The `reason` from the matching rule is what gets thrown, and
+it reaches the model verbatim as the tool result. An allow can carry a note too, appended to
+the result (a string `output` on V1, a `content` parts array on V2).
 
-**Resolve `current` both ways.** The agent's pointer to the active build is a symlink on
-unix and a text file holding the build id on Windows, and on any filesystem without symlink
-support. Treating it as a directory works on a Mac and finds nothing on Windows, which looks
-identical to having no policy assigned.
+**One instance per project.** In V2 service mode the bundle loads once per open project and
+every instance hears every bus event, but a session's hooks reach only its own instance. Token
+and stop reporting is gated to sessions this instance actually saw, or two open projects double
+every count.
 
-**Read arguments defensively.** File paths accept `filePath`, `file_path`, `path` or `file`,
-patches accept `patchText`, `patch` or `diff`. File-write enforcement hangs on these keys, so
-a rename in a future OpenCode release must not silently stop matching.
+**Resolve `current` both ways.** The pointer to the active build is a symlink on unix and a
+text file holding the build id on Windows. Treating it as a directory finds nothing on Windows,
+which looks identical to no policy assigned.
+
+**Read arguments defensively.** File paths accept `filePath`, `file_path`, `path` or `file`;
+patches accept `patchText`, `patch` or `diff`; commands accept `command`, `cmd` or `code`. A
+rename in a future OpenCode release must not silently stop matching.
 
 ---
 
 ## Layout
 
-Five source files, each with section banners inside.
+Eight source files:
 
-- **`index.ts`** is what OpenCode calls. It holds the five hook functions, all session state,
-  the token ledger and the signal recorder. The only file with state, and the only `throw`.
-- **`event.ts`** decides which policy section a tool call belongs to, then builds the event
-  JSON for it.
-- **`hook.ts`** reads `policies.json`, spawns `hooks.sh`, and parses its answer.
+- **`index.ts`** the dual export OpenCode loads: `server` for V1, `setup` for V2.
+- **`v1.ts`** / **`v2.ts`** the per-line adapters: registration and the tool-routing table.
+- **`runtime.ts`** the version-agnostic core, shared by both: config load, the `hooks.sh`
+  bridge, decision handling, and both token accumulators.
+- **`event.ts`** routes a tool call to a policy section and builds the event JSON.
 - **`normalize.ts`** turns untrusted input into known shapes: raw JSON, MCP tool ids, patch
   bodies, file paths.
-- **`types.ts`** is the shared vocabulary, imported by everything.
+- **`hook.ts`** reads `policies.json`, spawns `hooks.sh`, and parses its answer.
+- **`types.ts`** the shared vocabulary, imported by everything.
 
-Everything outside `index.ts`, and outside the spawning half of `hook.ts`, is a pure
-function, which is why the unit tests never launch OpenCode.
+Everything outside the adapters and the spawning half of `hook.ts` is a pure function, which
+is why the unit tests never launch OpenCode.
 
 ---
 
@@ -143,28 +171,30 @@ function, which is why the unit tests never launch OpenCode.
 
 Two tiers, both in `test/`.
 
-**Unit tests** mirror the modules and need nothing installed. 73 of them.
+**Unit tests** mirror the modules and need nothing installed. 118 of them.
 
 ```
 test/normalize.test.ts   MCP id resolution, patch parsing
 test/hook.test.ts        reading policies.json, parsing a decision
 test/event.test.ts       routing, payload shaping
-test/index.test.ts       token ledger, and that no hook ever throws
+test/v1.test.ts          V1 adapter, token ledger, and that no hook ever throws
+test/v2.test.ts          V2 adapter: code-mode routing, MCP scanning, per-session dedup
 ```
 
-**End-to-end tests** run the real `opencode` binary. 59 assertions across 9 scenarios. A fake
-model replays scripted tool calls, a stub stands in for `hooks.sh`, and everything is
-isolated into a temp directory so your own config is never touched.
+**End-to-end tests** run the real `opencode` binary. 81 assertions across 11 scenarios. A fake
+model replays scripted tool calls, a stub stands in for `hooks.sh`, and everything is isolated
+into a temp directory, so the developer's own config is never touched. The `v2_*` scenarios cover the V2
+line; the rest cover V1.
 
 | Scenario | Proves |
 |---|---|
-| `enforce` | allow and deny for shell, file read, file write and network, plus the reason reaching the model |
-| `patch` | file writes are still enforced on GPT-class models, where `apply_patch` replaces `write` and `edit` |
-| `mcp_tools` | real MCP traffic against a stub server, including recovering a server name from a flattened tool id |
-| `tokens` | token counts flushed per turn |
+| `enforce`, `v2_enforce` | allow and deny for command, read, write and network, plus the reason reaching the model |
+| `patch` | writes stay enforced on GPT-class models, where `apply_patch` / `patch` replaces `write` and `edit` |
+| `mcp_tools`, `v2_codemode` | MCP traffic against a stub, including recovering an MCP call from V2 code mode |
+| `tokens`, `v2_tokens` | token counts flushed per turn |
 | `anthropic` | cache-creation tokens, which only exist in Anthropic's wire format |
 | `subagent` | subagent usage attributed separately from its parent |
-| `failure` | a provider error becomes `stop_failure` |
+| `failure`, `v2_failure` | a provider error becomes `stop_failure` |
 | `degraded_missing`, `degraded_hang` | a missing hook script and a hanging one both fail open |
 
 ---
@@ -180,19 +210,19 @@ npm run build         # bundle to dist/armor1-opencode.js + .sha256
 
 The end-to-end suite needs the `opencode` binary on PATH and `jq`.
 
-TypeScript ships as source: OpenCode transpiles it with its bundled Bun runtime. The build
-still bundles to one file so the installer has a single asset with a stable digest.
+The bundle in `dist/` is the shipped artifact: one file with a stable digest, published as a
+release asset. OpenCode transpiles the source with its bundled runtime, so no build step runs
+on the customer machine.
 
 ---
 
 ## Known gaps
 
-- `opencode --pure` disables all plugins, and a plugin that fails to load is skipped
-  silently. Enforcement cannot resist someone who wants it off.
+- `opencode --pure` disables all plugins, and a plugin that fails to load is skipped silently.
+  Enforcement cannot resist someone who wants it off.
 - A subagent runs as its own session, so `session_start`, `before_submit_prompt` and `stop`
   fire for it as well as the parent. Claude Code reports one of each.
-- `stop` fires twice for a turn that errors, and a turn that dies before producing a response
-  still reports `completed`. Left alone because nothing reads these yet.
 - Shell commands the user types directly, rather than the model calling a tool, bypass the
   plugin entirely.
-- Desktop app support is unverified.
+- On V2, an MCP name built at runtime rather than written as a literal is not gated by the
+  `mcp` section (it is allowed, not blocked); the `command_execution` gate still sees the code.

@@ -1,0 +1,15 @@
+{
+ "model": "test-model",
+ "steps": [
+  {
+   "tool": "shell",
+   "args": {
+    "command": "echo counted",
+    "description": "t"
+   }
+  },
+  {
+   "text": "done"
+  }
+ ]
+}

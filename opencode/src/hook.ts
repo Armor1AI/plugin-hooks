@@ -25,9 +25,8 @@ interface Candidate {
   readonly file: string
 }
 
-// "current" points at the active build in one of two forms: a symlink on unix, or a text
-// file holding the build id on Windows and on filesystems without symlink support. The
-// agent reads both, so this does too.
+// "current" points at the active build: a symlink on unix, or a text file holding the
+// build id on Windows. The agent reads both forms, so this does too.
 export function currentBuildDir(home: string): string | undefined {
   const pointer = path.join(home, "current")
 
@@ -51,8 +50,8 @@ export function currentBuildDir(home: string): string | undefined {
   return undefined
 }
 
-// policies.json is written by the armor1 agent and rewritten whenever the server changes a
-// policy. Reading it directly means enforcement and telemetry modes are never stale.
+// Read directly so enforcement and telemetry modes are never stale; the agent rewrites
+// this file whenever the server changes a policy.
 export function candidates(env: NodeJS.ProcessEnv = process.env): Candidate[] {
   const homes = [env["ARMOR1_HOME"], path.join(os.homedir(), ".armor1")].filter(
     (home): home is string => typeof home === "string" && home !== "",
@@ -115,9 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigLoad {
 // ---------------------------------------------------------------------------
 // Running the hook
 // ---------------------------------------------------------------------------
-
-// Asynchronous on purpose. spawnSync would block the OpenCode server's event loop and
-// stall every other session until the hook returned.
+// Async: spawnSync would block the server event loop and stall every other session.
 export function runHook(
   config: AdapterConfig,
   section: Section,
@@ -125,8 +122,7 @@ export function runHook(
 ): Promise<Decision> {
   return new Promise((resolve) => {
     const args = ["--policy", config.specUname, "--hook", section]
-    // Telemetry-only sections never carry --policy-enabled, matching how hooks.sh is
-    // invoked for every other client.
+    // Telemetry-only sections never carry --policy-enabled, as for every other client.
     const enforcing = (ENFORCE_SECTIONS as readonly string[]).includes(section)
     if (enforcing && config.policyEnabled) args.push("--policy-enabled")
     if (config.telemetryEnabled) args.push("--telemetry-enabled")
@@ -140,7 +136,9 @@ export function runHook(
 
     let child
     try {
-      child = spawn(config.hooksPath, args, { env, stdio: ["pipe", "pipe", "pipe"] })
+      // Detached so a hook is not torn down with the host's process group: V2 `run` exits
+      // the instant a turn ends, which was killing the stop and token hooks.
+      child = spawn(config.hooksPath, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true })
     } catch (error) {
       resolve({ kind: "degraded", signal: "hook_spawn_failed", reason: describe(error) })
       return
