@@ -215,14 +215,3 @@ release asset. OpenCode transpiles the source with its bundled runtime, so no bu
 on the customer machine.
 
 ---
-
-## Known gaps
-
-- `opencode --pure` disables all plugins, and a plugin that fails to load is skipped silently.
-  Enforcement cannot resist someone who wants it off.
-- A subagent runs as its own session, so `session_start`, `before_submit_prompt` and `stop`
-  fire for it as well as the parent. Claude Code reports one of each.
-- Shell commands the user types directly, rather than the model calling a tool, bypass the
-  plugin entirely.
-- On V2, an MCP name built at runtime rather than written as a literal is not gated by the
-  `mcp` section (it is allowed, not blocked); the `command_execution` gate still sees the code.

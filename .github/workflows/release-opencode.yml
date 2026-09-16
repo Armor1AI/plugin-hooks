@@ -1,0 +1,71 @@
+name: release-opencode
+
+# main is staging. Pushing to the publish branch releases whatever version is in
+# opencode/package.json. The path filter means only opencode changes trigger this,
+# so other clients on the same branch never publish here.
+on:
+  push:
+    branches:
+      - publish
+    paths:
+      - "opencode/**"
+
+permissions:
+  contents: write          
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: opencode
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: opencode/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Resolve version and tag
+        id: meta
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=opencode-v$version" >> "$GITHUB_OUTPUT"
+
+      # Append only guard: refuse to re-release a version that already shipped.
+      # Bump opencode/package.json before pushing to publish.
+      - name: Ensure the release does not already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag already exists. Bump opencode/package.json before publishing." >&2
+            exit 1
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: opencode ${{ steps.meta.outputs.version }}
+          files: |
+            opencode/dist/armor1-opencode.js
+            opencode/dist/armor1-opencode.js.sha256
+          fail_on_unmatched_files: true
