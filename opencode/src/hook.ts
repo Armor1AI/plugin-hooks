@@ -124,16 +124,20 @@ export function loadConfig(
 // A .ps1 cannot be executed directly; on Windows the runner is hooks.ps1 under the same
 // host the agent uses for every other client (policy.ps1). `host` is only overridden by
 // tests, which drive the Windows argv through pwsh on a unix box.
+// Detached only on unix: it keeps a hook alive when V2 `run` tears down the process group
+// at the end of a turn. On Windows it means DETACHED_PROCESS, no console, and powershell.exe
+// exits 0 without running the script.
 export function spawnSpec(
   hooksPath: string,
   args: readonly string[],
   platform: NodeJS.Platform = process.platform,
   host = "powershell.exe",
-): { readonly file: string; readonly argv: readonly string[] } {
-  if (platform !== "win32") return { file: hooksPath, argv: args }
+): { readonly file: string; readonly argv: readonly string[]; readonly detached: boolean } {
+  if (platform !== "win32") return { file: hooksPath, argv: args, detached: true }
   return {
     file: host,
     argv: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", hooksPath, ...args],
+    detached: false,
   }
 }
 
@@ -150,7 +154,7 @@ export function runHook(
     const enforcing = (ENFORCE_SECTIONS as readonly string[]).includes(section)
     if (enforcing && config.policyEnabled) args.push("--policy-enabled")
     if (config.telemetryEnabled) args.push("--telemetry-enabled")
-    const { file, argv } = spec(config.hooksPath, args)
+    const { file, argv, detached } = spec(config.hooksPath, args)
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -161,13 +165,11 @@ export function runHook(
 
     let child
     try {
-      // Detached so a hook is not torn down with the host's process group: V2 `run` exits
-      // the instant a turn ends, which was killing the stop and token hooks. On Windows a
-      // detached child gets its own console window unless windowsHide is set.
+      // windowsHide: never let a hook flash a console window on the user's screen.
       child = spawn(file, [...argv], {
         env,
         stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
+        detached,
         windowsHide: true,
       })
     } catch (error) {

@@ -208,10 +208,13 @@ test("picks hooks.ps1 on win32 and hooks.sh elsewhere", () => {
 
 test("spawnSpec wraps the runner in a hidden non-interactive PowerShell on win32 only", () => {
   const args = ["--policy", "opencode-policy", "--hook", "command_execution", "--policy-enabled"]
-  assert.deepEqual(spawnSpec("/p/hooks.sh", args, "darwin"), { file: "/p/hooks.sh", argv: args })
+  assert.deepEqual(spawnSpec("/p/hooks.sh", args, "darwin"), { file: "/p/hooks.sh", argv: args, detached: true })
+  // Not detached on Windows: DETACHED_PROCESS gives powershell.exe no console and it exits
+  // 0 without running the script, which reads as a silent allow.
   assert.deepEqual(spawnSpec("C:\\p\\hooks.ps1", args, "win32"), {
     file: "powershell.exe",
     argv: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\p\\hooks.ps1", ...args],
+    detached: false,
   })
 })
 
