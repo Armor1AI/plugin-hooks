@@ -123,7 +123,7 @@ on both lines: a throw in either the before or after hook aborts the call.
 resolve to allow. Missing enforcement is caught centrally by absent telemetry, not by
 blocking the user's work.
 
-**Own the timeout.** OpenCode waits forever for a plugin hook. The plugin enforces 10 seconds
+**Own the timeout.** OpenCode waits forever for a plugin hook. The plugin enforces 30 seconds
 itself, matching what other clients declare, and treats expiry as allow.
 
 **Never block the event loop.** The plugin runs inside OpenCode's process, so the hook is

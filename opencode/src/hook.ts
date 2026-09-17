@@ -11,7 +11,7 @@ import { asRecord, asString, describe, isRecord } from "./normalize.ts"
 // ---------------------------------------------------------------------------
 
 const SPEC_UNAME = "opencode-policy"
-const HOOK_TIMEOUT_MS = 10_000
+const HOOK_TIMEOUT_MS = 30_000
 
 export type ConfigLoad =
   | { readonly kind: "ok"; readonly config: AdapterConfig }
