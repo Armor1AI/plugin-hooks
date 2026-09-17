@@ -1,7 +1,6 @@
 import type { Counters } from "./types.ts"
 import {
   V2_TOOLS,
-  build,
   buildAfter,
   buildAfterMcp,
   buildError,
@@ -13,7 +12,7 @@ import {
   type BuildContext,
 } from "./event.ts"
 import { createAccumulator, createRuntime, errorDetails } from "./runtime.ts"
-import { isRecord } from "./normalize.ts"
+import { isRecord, resolveMcpTool } from "./normalize.ts"
 
 // ---------------------------------------------------------------------------
 // V2 adapter
@@ -75,27 +74,6 @@ export function countersOfV2(tokens: unknown, cost: unknown): Counters {
   }
 }
 
-// V2 MCP calls surface only in the execute result metadata, as `server.tool` ids.
-// A dotless id is a builtin called from code mode, not MCP.
-export function mcpCallsOf(result: Record<string, unknown> | undefined): { server: string; tool: string; args: Record<string, unknown> }[] {
-  const metadata = isRecord(result?.["metadata"]) ? (result["metadata"] as Record<string, unknown>) : undefined
-  const calls = metadata?.["toolCalls"]
-  if (!Array.isArray(calls)) return []
-
-  const out: { server: string; tool: string; args: Record<string, unknown> }[] = []
-  for (const entry of calls) {
-    if (!isRecord(entry)) continue
-    const id = typeof entry["tool"] === "string" ? entry["tool"] : ""
-    const dot = id.indexOf(".")
-    if (dot <= 0 || dot === id.length - 1) continue
-    out.push({
-      server: id.slice(0, dot),
-      tool: id.slice(dot + 1),
-      args: isRecord(entry["input"]) ? (entry["input"] as Record<string, unknown>) : {},
-    })
-  }
-  return out
-}
 
 // Reads MCP server/tool from the code text before execution. Only literal keys parse;
 // a dynamic key like tools[name] yields no call, flagged `dynamic` (counted, never blocked).
@@ -103,25 +81,6 @@ const ACCESS = "(?:\\[\\s*[\"'`]([^\"'`]+)[\"'`]\\s*\\]|\\.([A-Za-z_$][\\w$]*))"
 const LITERAL_PAIR = new RegExp(`\\btools${ACCESS}${ACCESS}`, "g")
 const TOOLS_REF = /\btools\s*[.[]/g
 
-export function scanCodeMcp(
-  code: string,
-  servers: readonly string[],
-): { calls: { server: string; tool: string }[]; dynamic: boolean; unknown: string[] } {
-  const pairs: { server: string; tool: string }[] = []
-  for (const match of code.matchAll(LITERAL_PAIR)) {
-    const server = match[1] ?? match[2]
-    const tool = match[3] ?? match[4]
-    if (server === undefined || tool === undefined) continue
-    pairs.push({ server, tool })
-  }
-  // A readable pair that is not a configured server (e.g. tools.browser.evaluate) is
-  // dropped, not counted as dynamic.
-  return {
-    calls: pairs.filter((pair) => servers.includes(pair.server)),
-    dynamic: [...code.matchAll(TOOLS_REF)].length > pairs.length,
-    unknown: [...new Set(pairs.map((pair) => pair.server).filter((server) => !servers.includes(server)))],
-  }
-}
 
 export function createV2Setup() {
   return async (ctx: V2Context): Promise<() => void> => {
@@ -142,8 +101,9 @@ export function createV2Setup() {
     const owned = (sessionID: string): boolean => turns.has(sessionID) || started.has(sessionID)
     const turnOf = (sessionID: string): string => turns.get(sessionID) ?? ""
 
-    // MCP servers aren't loaded at setup, so this list starts empty and is re-read when code
-    // mode names an unknown one. Single-flight (concurrent mcp.list() deadlocks) and bounded.
+    // MCP servers aren't loaded at setup, so this list starts empty and is re-read when a
+    // tool hook names one we cannot place. Single-flight (concurrent mcp.list() deadlocks)
+    // and bounded.
     let mcpServers: readonly string[] = []
     let listing: Promise<void> | undefined
     const refreshMcpServers = (): Promise<void> => {
@@ -166,9 +126,18 @@ export function createV2Setup() {
       })()
       return listing
     }
-    // Unknown after a refresh, so we do not re-list on every call.
+    // Still unplaced after a refresh, so we do not re-list on every call.
     const notServers = new Set<string>()
     await refreshMcpServers()
+
+    // V2 runs every MCP tool called from code mode through the same tool hooks as a direct
+    // call, named server_tool with the parent call's id, so no program-text parsing is needed.
+    const placeable = async (tool: string): Promise<void> => {
+      if (tool in V2_TOOLS.enforce || tool in V2_TOOLS.telemetry || notServers.has(tool)) return
+      if (resolveMcpTool(tool, mcpServers).kind !== "none") return
+      await refreshMcpServers()
+      if (resolveMcpTool(tool, mcpServers).kind === "none") notServers.add(tool)
+    }
 
     const context = (sessionID: string, tool: string, callID: string, messageID: string): BuildContext => ({
       tool,
@@ -188,6 +157,7 @@ export function createV2Setup() {
     }
 
     await ctx.tool.hook("execute.before", async (event: V2ToolBefore) => {
+      await rt.guard("mcp_list", () => placeable(event.tool))
       const denial = await rt.evaluate(
         context(event.sessionID, event.tool, event.id, event.messageID),
         argsOf(event.input),
@@ -195,39 +165,6 @@ export function createV2Setup() {
       )
       // The only throw on the V2 path.
       if (denial !== undefined) throw new Error(denial)
-
-      if (event.tool !== "execute") return
-
-      // Code mode is the only route to MCP on V2, so gate `mcp` from the program text too.
-      // A crash must not read as a denial, so the scan runs in guard and the throw follows.
-      let mcpDenial: string | undefined
-      await rt.guard("mcp_code", async () => {
-        const code = typeof argsOf(event.input)["code"] === "string" ? (argsOf(event.input)["code"] as string) : ""
-        let scan = scanCodeMcp(code, mcpServers)
-        if (scan.unknown.some((server) => !notServers.has(server))) {
-          await refreshMcpServers()
-          scan = scanCodeMcp(code, mcpServers)
-          for (const server of scan.unknown) notServers.add(server)
-        }
-        if (scan.dynamic) rt.signals.record("mcp_code_dynamic")
-
-        for (const call of scan.calls) {
-          const built = build(
-            context(event.sessionID, `${call.server}.${call.tool}`, event.id, event.messageID),
-            { kind: "mcp", section: "mcp", resolution: { kind: "match", server: call.server, tool: call.tool } },
-            {},
-          )
-          if (built === undefined) continue
-          for (const payload of built.payloads) {
-            const decision = await rt.send("mcp", payload)
-            if (decision?.kind === "deny") {
-              mcpDenial = decision.reason
-              return
-            }
-          }
-        }
-      })
-      if (mcpDenial !== undefined) throw new Error(mcpDenial)
     })
 
     await ctx.tool.hook("execute.after", async (event: V2ToolAfter) => {
@@ -251,18 +188,6 @@ export function createV2Setup() {
         for (const signal of result.signals) rt.signals.record(signal)
         for (const payload of result.payloads) await rt.send(classification.section, payload)
       })
-
-      // Code mode can invoke MCP tools the tool hook never sees individually.
-      if (event.tool === "execute" && event.status === "completed") {
-        await rt.emit(async () => {
-          for (const call of mcpCallsOf(event.result)) {
-            const mcpCtx = context(event.sessionID, `${call.server}.${call.tool}`, event.id, event.messageID)
-            const built = buildAfterMcp(mcpCtx, { kind: "match", server: call.server, tool: call.tool }, call.args, event.result)
-            for (const signal of built.signals) rt.signals.record(signal)
-            for (const payload of built.payloads) await rt.send("post_mcp", payload)
-          }
-        })
-      }
     })
 
     await ctx.session.hook("prompt", async (event: { sessionID: string; messageID: string; prompt?: unknown }) => {

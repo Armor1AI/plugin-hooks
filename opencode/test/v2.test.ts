@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { appendContextV2, countersOfV2, createV2Setup, field, mcpCallsOf, scanCodeMcp } from "../src/v2.ts"
+import { appendContextV2, countersOfV2, createV2Setup, field } from "../src/v2.ts"
 import { createAccumulator } from "../src/runtime.ts"
 import { V1_TOOLS, V2_TOOLS, build, classify, classifyAfter } from "../src/event.ts"
 
@@ -150,34 +150,6 @@ test("empty counters are dropped and an unknown session is safe", () => {
 
 // MCP on V2 arrives in the execute result as `server.tool`, dot-separated.
 
-const withCalls = (calls: unknown) => ({ metadata: { toolCalls: calls } })
-
-test("mcpCallsOf splits the real V2 id on the first dot", () => {
-  const calls = mcpCallsOf(withCalls([{ tool: "notion-server.API-get-self", status: "completed" }]))
-  assert.deepEqual(calls, [{ server: "notion-server", tool: "API-get-self", args: {} }])
-})
-
-test("mcpCallsOf keeps dots in the tool half", () => {
-  const calls = mcpCallsOf(withCalls([{ tool: "srv.group.tool", status: "completed" }]))
-  assert.deepEqual(calls[0], { server: "srv", tool: "group.tool", args: {} })
-})
-
-test("mcpCallsOf carries arguments when the entry has them", () => {
-  const calls = mcpCallsOf(withCalls([{ tool: "s.t", input: { query: "hi" } }]))
-  assert.deepEqual(calls[0]!.args, { query: "hi" })
-})
-
-test("mcpCallsOf ignores builtin tools called from code mode", () => {
-  assert.deepEqual(mcpCallsOf(withCalls([{ tool: "search", status: "completed" }])), [])
-})
-
-test("mcpCallsOf rejects malformed ids and junk metadata", () => {
-  assert.deepEqual(mcpCallsOf(withCalls([{ tool: ".leading" }, { tool: "trailing." }, { tool: "" }, null, 7])), [])
-  assert.deepEqual(mcpCallsOf(withCalls("not an array")), [])
-  assert.deepEqual(mcpCallsOf({}), [])
-  assert.deepEqual(mcpCallsOf(undefined), [])
-})
-
 // Context injection: V2 results carry a typed content parts array, not a string.
 
 test("appendContextV2 pushes a text part onto an existing content array", () => {
@@ -268,64 +240,6 @@ test("cleanup is safe to await", async () => {
 
 // Before the call only the program exists, so the pair is read from the code text.
 // What cannot be read is counted and allowed, not blocked.
-
-const SERVERS = ["notion-server", "github"]
-
-test("scanCodeMcp reads the bracket form a real model wrote", () => {
-  const scan = scanCodeMcp('return await tools["notion-server"]["API-get-self"]()', SERVERS)
-  assert.deepEqual(scan.calls, [{ server: "notion-server", tool: "API-get-self" }])
-  assert.equal(scan.dynamic, false)
-})
-
-test("scanCodeMcp reads dot access and mixed access", () => {
-  assert.deepEqual(scanCodeMcp("await tools.github.get_issue({})", SERVERS).calls, [
-    { server: "github", tool: "get_issue" },
-  ])
-  assert.deepEqual(scanCodeMcp('await tools.github["get-issue"]({})', SERVERS).calls, [
-    { server: "github", tool: "get-issue" },
-  ])
-})
-
-test("scanCodeMcp gates every call in one program", () => {
-  const scan = scanCodeMcp(
-    'await tools["notion-server"]["API-get-self"](); await tools.github.get_issue({})',
-    SERVERS,
-  )
-  assert.deepEqual(scan.calls, [
-    { server: "notion-server", tool: "API-get-self" },
-    { server: "github", tool: "get_issue" },
-  ])
-  assert.equal(scan.dynamic, false)
-})
-
-test("scanCodeMcp drops builtin namespaces without calling them dynamic", () => {
-  const scan = scanCodeMcp('await tools.browser.evaluate({}); await tools.opencode.session_rename({})', SERVERS)
-  assert.deepEqual(scan.calls, [])
-  assert.equal(scan.dynamic, false)
-})
-
-test("scanCodeMcp reports the concatenation dodge as dynamic, and allows it", () => {
-  const scan = scanCodeMcp('const s = "not" + "ion-server"; await tools[s]["API-get-self"]({})', SERVERS)
-  assert.deepEqual(scan.calls, [])
-  assert.equal(scan.dynamic, true)
-})
-
-test("scanCodeMcp reports an aliased server as dynamic", () => {
-  const scan = scanCodeMcp('const t = tools["notion-server"]; await t["API-get-self"]()', SERVERS)
-  assert.deepEqual(scan.calls, [])
-  assert.equal(scan.dynamic, true)
-})
-
-test("scanCodeMcp ignores a server that is not configured, and names it", () => {
-  const scan = scanCodeMcp('await tools["other-server"]["x"]()', SERVERS)
-  assert.deepEqual(scan.calls, [])
-  assert.deepEqual(scan.unknown, ["other-server"])
-})
-
-test("scanCodeMcp handles code with no tools reference", () => {
-  assert.deepEqual(scanCodeMcp("return 1 + 1", SERVERS), { calls: [], dynamic: false, unknown: [] })
-  assert.deepEqual(scanCodeMcp("", SERVERS), { calls: [], dynamic: false, unknown: [] })
-})
 
 // In service mode two instances share the bus; only the one dispatched a session's
 // hooks may report it, or every stop and token row doubles.
@@ -432,7 +346,31 @@ test("two instances for two projects each report only their own session", async 
   assert.equal(sections.filter((s) => s === "model_token_usage").length, 2)
 })
 
-test("an MCP server missing at setup is picked up when code mode first names it", async () => {
+// V2 runs an MCP tool called from code mode through the same execute.before / execute.after
+// hooks as a direct call, named server_tool and sharing the parent call's id. One call, one
+// mcp and one post_mcp, with the wrapper reported as a command.
+test("a code-mode MCP call is gated and reported exactly once", async () => {
+  const rig = busRig()
+  process.env["ARMOR1_HOME"] = rig.home
+  const registered: Registered = { tool: {}, session: {} }
+  const ctx = { ...fakeCtx(registered), mcp: { list: async () => ({ data: [{ name: "notion-server" }] }) } }
+  const cleanup = await createV2Setup()(ctx as never)
+
+  const base = { sessionID: "s", agent: "build", messageID: "m", id: "c" }
+  const code = 'return await tools["notion-server"]["API-get-self"]();'
+  await registered.tool["execute.before"]!({ ...base, tool: "execute", input: { code } })
+  await registered.tool["execute.before"]!({ ...base, tool: "notion-server_API-get-self", input: {} })
+  await registered.tool["execute.after"]!({ ...base, tool: "notion-server_API-get-self", input: {}, status: "completed", result: { output: "me" } })
+  await registered.tool["execute.after"]!({
+    ...base, tool: "execute", input: { code }, status: "completed",
+    result: { output: "me", metadata: { toolCalls: [{ tool: "notion-server.API-get-self", status: "completed" }] } },
+  })
+  await cleanup()
+
+  assert.deepEqual(rig.sections(), ["command_execution", "mcp", "post_mcp", "post_shell_execution"])
+})
+
+test("an MCP server missing at setup is picked up when its tool hook first fires", async () => {
   // The service has no MCP servers loaded when setup runs. The list must be re-read on
   // demand, or the gate silently sees an empty allowlist forever.
   const rig = busRig()
@@ -446,16 +384,15 @@ test("an MCP server missing at setup is picked up when code mode first names it"
   const cleanup = await createV2Setup()(ctx as never)
 
   await registered.tool["execute.before"]!({
-    tool: "execute", sessionID: "s", agent: "build", messageID: "m", id: "c",
-    input: { code: 'await tools["notion-server"]["API-get-self"]({})' },
+    tool: "notion-server_API-get-self", sessionID: "s", agent: "build", messageID: "m", id: "c", input: {},
   })
   await cleanup()
 
   assert.equal(listCalls, 2, "the list was not re-read")
-  assert.deepEqual(rig.sections(), ["command_execution", "mcp"])
+  assert.deepEqual(rig.sections(), ["mcp"])
 })
 
-test("a namespace that is not a server triggers one refresh, not one per call", async () => {
+test("a tool that is neither builtin nor a server triggers one refresh, not one per call", async () => {
   const rig = busRig()
   process.env["ARMOR1_HOME"] = rig.home
   const registered: Registered = { tool: {}, session: {} }
@@ -463,7 +400,7 @@ test("a namespace that is not a server triggers one refresh, not one per call", 
   const ctx = { ...fakeCtx(registered), mcp: { list: async () => { listCalls++; return { data: [] } } } }
   const cleanup = await createV2Setup()(ctx as never)
 
-  const call = { tool: "execute", sessionID: "s", agent: "build", messageID: "m", id: "c", input: { code: "const f = tools.browser.evaluate" } }
+  const call = { tool: "browser_evaluate", sessionID: "s", agent: "build", messageID: "m", id: "c", input: {} }
   await registered.tool["execute.before"]!(call)
   await registered.tool["execute.before"]!({ ...call, id: "c2" })
   await cleanup()

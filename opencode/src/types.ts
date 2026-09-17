@@ -150,7 +150,6 @@ export type Signal =
   | "hook_ask_downgraded"
   | "adapter_exception"
   | "mcp_ambiguous"
-  | "mcp_code_dynamic"
   | "patch_unparseable"
 
 // ---------------------------------------------------------------------------

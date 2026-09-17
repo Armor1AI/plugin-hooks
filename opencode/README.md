@@ -100,14 +100,15 @@ Enforcement sections can block a call. Telemetry sections only report.
 Not built: `subagent_start`, `subagent_stop`, and `session_end`, which has no OpenCode
 equivalent.
 
-### MCP on V2 is code-mode only
+### MCP on V2 goes through code mode, and still reaches the hooks
 
 V2 exposes MCP tools only inside the `execute` tool, as model-written TypeScript like
-`await tools["notion-server"]["API-get-self"]()`. No MCP id reaches the hook, so the plugin
-reads the server and tool out of the program text and gates them as `mcp`. Only literal keys
-parse; a name built at runtime (`tools[name]`) yields no call, is flagged, and is allowed
-rather than blocked, since denying unparseable code would reject ordinary programs. The code
-still passes through `command_execution` regardless.
+`await tools["notion-server"]["API-get-self"]()`. Each MCP call the program makes runs through
+the same `execute.before` / `execute.after` hooks as a direct call, named `server_tool` and
+sharing the parent call's id (`packages/core/src/tool.ts`), so it is gated as `mcp` and
+reported as `post_mcp` with its real arguments and result. A deny fails that one call inside
+the program. The `execute` wrapper itself passes through `command_execution` with the code as
+the command. The plugin does not parse program text.
 
 ---
 
@@ -178,7 +179,7 @@ test/normalize.test.ts   MCP id resolution, patch parsing
 test/hook.test.ts        reading policies.json, parsing a decision
 test/event.test.ts       routing, payload shaping
 test/v1.test.ts          V1 adapter, token ledger, and that no hook ever throws
-test/v2.test.ts          V2 adapter: code-mode routing, MCP scanning, per-session dedup
+test/v2.test.ts          V2 adapter: code-mode routing, MCP via tool hooks, per-session dedup
 ```
 
 **End-to-end tests** run the real `opencode` binary. 81 assertions across 11 scenarios. A fake
@@ -190,7 +191,7 @@ line; the rest cover V1.
 |---|---|
 | `enforce`, `v2_enforce` | allow and deny for command, read, write and network, plus the reason reaching the model |
 | `patch` | writes stay enforced on GPT-class models, where `apply_patch` / `patch` replaces `write` and `edit` |
-| `mcp_tools`, `v2_codemode` | MCP traffic against a stub, including recovering an MCP call from V2 code mode |
+| `mcp_tools`, `v2_codemode` | MCP traffic against a stub, and the V2 code-mode wrapper reported as a command |
 | `tokens`, `v2_tokens` | token counts flushed per turn |
 | `anthropic` | cache-creation tokens, which only exist in Anthropic's wire format |
 | `subagent` | subagent usage attributed separately from its parent |
