@@ -24,7 +24,7 @@ test("model name joins provider and model", () => {
   assert.equal(modelName({ id: "m", sessionID: "s", modelID: "solo" }), "solo")
 })
 
-test("maps all four Claude counters plus the OpenCode extras", () => {
+test("maps the four counters every client reports and nothing else", () => {
   const ledger = createLedger()
   ledger.record(message())
   const rows = ledger.flush("ses_1")
@@ -32,13 +32,10 @@ test("maps all four Claude counters plus the OpenCode extras", () => {
   assert.equal(rows.length, 1)
   assert.deepEqual(rows[0], {
     model: "anthropic/claude-sonnet-5",
-    fast_mode: false,
     input_tokens: 100,
     output_tokens: 20,
     cache_read_input_tokens: 40,
     cache_creation_input_tokens: 60,
-    reasoning_tokens: 5,
-    cost: 0.01,
   })
 })
 

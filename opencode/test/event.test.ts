@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { build, buildAfter, buildError, buildPrompt, buildSessionStart, buildStop, classify, classifyAfter } from "../src/event.ts"
+import { build, buildAfter, buildError, buildPrompt, buildSessionStart, buildStop, classify, classifyAfter, usageRecord } from "../src/event.ts"
 
 // Routing
 
@@ -255,4 +255,15 @@ test("an empty string does not mask a later valid key", () => {
 test("a write with no recognisable path yields no payload rather than an empty one", () => {
   const result = build({ ...ctx, tool: "write" }, classify("write", []), { somethingElse: 1 })
   assert.deepEqual(result?.payloads, [])
+})
+
+// Token usage rides as flat text (Codex layout) so the policy builds the array in-program.
+test("usageRecord renders one segment per model in the Codex key=value layout", () => {
+  const row = { model: "opencode/muse", input_tokens: 562, output_tokens: 147, cache_read_input_tokens: 62562, cache_creation_input_tokens: 0 }
+  assert.equal(usageRecord([row]), "model=opencode/muse;input=562;output=147;cache_read=62562;cache_creation=0")
+  assert.equal(
+    usageRecord([row, { ...row, model: "anthropic/claude-sonnet-5", input_tokens: 1 }]),
+    "model=opencode/muse;input=562;output=147;cache_read=62562;cache_creation=0|model=anthropic/claude-sonnet-5;input=1;output=147;cache_read=62562;cache_creation=0",
+  )
+  assert.equal(usageRecord([]), "")
 })

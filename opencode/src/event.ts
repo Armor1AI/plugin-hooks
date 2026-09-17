@@ -397,6 +397,19 @@ export function buildError(
   }
 }
 
+// Flat text, one segment per model, parsed by the policy's regex_findall + fold (the Codex
+// layout). A JSON array here would be collapsed to an object by the Windows interpreter when
+// it holds one row; text built into rows inside the program keeps its array shape.
+export function usageRecord(rows: readonly UsageRow[]): string {
+  return rows
+    .map(
+      (r) =>
+        `model=${r.model};input=${r.input_tokens};output=${r.output_tokens};` +
+        `cache_read=${r.cache_read_input_tokens};cache_creation=${r.cache_creation_input_tokens}`,
+    )
+    .join("|")
+}
+
 export function buildUsage(
   ctx: SessionContext,
   scope: "session" | "subagent",
@@ -406,7 +419,7 @@ export function buildUsage(
   const section = scope === "subagent" ? "model_token_usage_subagent" : "model_token_usage"
   return {
     ...envelope(ctx, "TokenUsage", section),
-    model_usage: rows,
+    usage_record: usageRecord(rows),
     ...(agentID !== undefined ? { agent_id: agentID } : {}),
     armor1: { section, scope },
   }

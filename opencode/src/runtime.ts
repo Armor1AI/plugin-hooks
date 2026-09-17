@@ -223,16 +223,14 @@ function add(running: Counters, diff: Counters): Counters {
   }
 }
 
+// Only the four counters every client reports; reasoning and cost stay internal.
 function rowsOf(byModel: Map<string, Counters>): UsageRow[] {
   return [...byModel.entries()].map(([model, counters]) => ({
     model,
-    fast_mode: false,
     input_tokens: counters.input,
     output_tokens: counters.output,
     cache_read_input_tokens: counters.cacheRead,
     cache_creation_input_tokens: counters.cacheWrite,
-    reasoning_tokens: counters.reasoning,
-    cost: counters.cost,
   }))
 }
 

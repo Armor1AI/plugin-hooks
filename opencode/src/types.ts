@@ -118,7 +118,7 @@ export interface StopHookPayload extends BaseHookPayload {
 
 export interface UsageHookPayload extends BaseHookPayload {
   readonly hook_event_name: "TokenUsage"
-  readonly model_usage: readonly UsageRow[]
+  readonly usage_record: string
   readonly agent_id?: string
 }
 
@@ -168,13 +168,10 @@ export interface Counters {
 
 export interface UsageRow {
   readonly model: string
-  readonly fast_mode: boolean
   readonly input_tokens: number
   readonly output_tokens: number
   readonly cache_read_input_tokens: number
   readonly cache_creation_input_tokens: number
-  readonly reasoning_tokens: number
-  readonly cost: number
 }
 
 export interface AssistantMessageLike {
