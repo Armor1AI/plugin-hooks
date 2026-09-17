@@ -110,9 +110,11 @@ test("flushing an unknown session is safe", () => {
 
 // The adapter must never throw except a deliberate denial: OpenCode cannot tell a
 // crash from a deny in tool.execute.before.
-// Point resolution at a home that cannot exist, so the test is deterministic.
+// Point both candidate homes (ARMOR1_HOME and the ~/.armor1 fallback) at paths that cannot
+// exist, so a live policy on the developer box cannot leak in.
 const load = () => {
   process.env["ARMOR1_HOME"] = "/nonexistent/armor1"
+  process.env["HOME"] = "/nonexistent/home"
   return Armor1Plugin({ directory: "/work" })
 }
 

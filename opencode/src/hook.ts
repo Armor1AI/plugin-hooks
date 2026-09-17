@@ -64,7 +64,11 @@ export function candidates(env: NodeJS.ProcessEnv = process.env): Candidate[] {
   })
 }
 
-export function parseConfig(raw: string, candidate: Candidate): AdapterConfig | ConfigLoad {
+export function parseConfig(
+  raw: string,
+  candidate: Candidate,
+  platform: NodeJS.Platform = process.platform,
+): AdapterConfig | ConfigLoad {
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -83,7 +87,7 @@ export function parseConfig(raw: string, candidate: Candidate): AdapterConfig | 
   const engine = parsed["telemetry_engine"]
 
   return {
-    hooksPath: path.join(candidate.policiesDir, "hooks.sh"),
+    hooksPath: path.join(candidate.policiesDir, platform === "win32" ? "hooks.ps1" : "hooks.sh"),
     armorHome: candidate.home,
     settingsFile: path.join(candidate.home, "config", "settings.json"),
     telemetryEngine: typeof engine === "string" && engine !== "" ? engine : "interpreter",
@@ -94,7 +98,10 @@ export function parseConfig(raw: string, candidate: Candidate): AdapterConfig | 
   }
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigLoad {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ConfigLoad {
   const searched = candidates(env)
 
   for (const candidate of searched) {
@@ -104,7 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigLoad {
     } catch {
       continue
     }
-    const parsed = parseConfig(raw, candidate)
+    const parsed = parseConfig(raw, candidate, platform)
     return "kind" in parsed ? parsed : { kind: "ok", config: parsed }
   }
 
@@ -114,11 +121,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigLoad {
 // ---------------------------------------------------------------------------
 // Running the hook
 // ---------------------------------------------------------------------------
+// A .ps1 cannot be executed directly; on Windows the runner is hooks.ps1 under the same
+// host the agent uses for every other client (policy.ps1). `host` is only overridden by
+// tests, which drive the Windows argv through pwsh on a unix box.
+export function spawnSpec(
+  hooksPath: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  host = "powershell.exe",
+): { readonly file: string; readonly argv: readonly string[] } {
+  if (platform !== "win32") return { file: hooksPath, argv: args }
+  return {
+    file: host,
+    argv: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", hooksPath, ...args],
+  }
+}
+
 // Async: spawnSync would block the server event loop and stall every other session.
 export function runHook(
   config: AdapterConfig,
   section: Section,
   payload: HookPayload,
+  spec: (hooksPath: string, args: readonly string[]) => ReturnType<typeof spawnSpec> = spawnSpec,
 ): Promise<Decision> {
   return new Promise((resolve) => {
     const args = ["--policy", config.specUname, "--hook", section]
@@ -126,6 +150,7 @@ export function runHook(
     const enforcing = (ENFORCE_SECTIONS as readonly string[]).includes(section)
     if (enforcing && config.policyEnabled) args.push("--policy-enabled")
     if (config.telemetryEnabled) args.push("--telemetry-enabled")
+    const { file, argv } = spec(config.hooksPath, args)
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -137,8 +162,14 @@ export function runHook(
     let child
     try {
       // Detached so a hook is not torn down with the host's process group: V2 `run` exits
-      // the instant a turn ends, which was killing the stop and token hooks.
-      child = spawn(config.hooksPath, args, { env, stdio: ["pipe", "pipe", "pipe"], detached: true })
+      // the instant a turn ends, which was killing the stop and token hooks. On Windows a
+      // detached child gets its own console window unless windowsHide is set.
+      child = spawn(file, [...argv], {
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
+        windowsHide: true,
+      })
     } catch (error) {
       resolve({ kind: "degraded", signal: "hook_spawn_failed", reason: describe(error) })
       return

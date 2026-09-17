@@ -211,8 +211,11 @@ const fakeCtx = (registered: Registered) => ({
   mcp: { list: async () => ({ data: [] }) },
 })
 
+// Both candidate homes must be empty: ARMOR1_HOME and the ~/.armor1 fallback, which on a
+// developer box can hold a live enforcing policy.
 const setup = async () => {
   process.env["ARMOR1_HOME"] = "/nonexistent/armor1"
+  process.env["HOME"] = "/nonexistent/home"
   const registered: Registered = { tool: {}, session: {} }
   const cleanup = await createV2Setup()(fakeCtx(registered) as never)
   return { registered, cleanup }

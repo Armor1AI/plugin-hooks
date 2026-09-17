@@ -3,7 +3,11 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { candidates, currentBuildDir, parseConfig, parseDecision } from "../src/hook.ts"
+import { spawnSync } from "node:child_process"
+import { candidates, currentBuildDir, loadConfig, parseConfig, parseDecision, runHook, spawnSpec } from "../src/hook.ts"
+import type { HookPayload } from "../src/types.ts"
+
+const hasPwsh = () => spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status === 0
 
 // Reading policies.json
 
@@ -191,4 +195,57 @@ test("a degraded result names its own signal instead of leaving it to be guessed
     if (d.kind !== "degraded") continue
     assert.equal(d.signal, signal, stdout)
   }
+})
+
+// Windows: the runner is hooks.ps1 and it needs a PowerShell host.
+
+test("picks hooks.ps1 on win32 and hooks.sh elsewhere", () => {
+  const win = parseConfig(policy(), candidate(), "win32")
+  assert.ok(!("kind" in win))
+  assert.equal(win.hooksPath, "/opt/armor1/1.4.0+abc/policies/hooks.ps1")
+  assert.equal(ok(policy()).hooksPath, "/opt/armor1/1.4.0+abc/policies/hooks.sh")
+})
+
+test("spawnSpec wraps the runner in a hidden non-interactive PowerShell on win32 only", () => {
+  const args = ["--policy", "opencode-policy", "--hook", "command_execution", "--policy-enabled"]
+  assert.deepEqual(spawnSpec("/p/hooks.sh", args, "darwin"), { file: "/p/hooks.sh", argv: args })
+  assert.deepEqual(spawnSpec("C:\\p\\hooks.ps1", args, "win32"), {
+    file: "powershell.exe",
+    argv: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\p\\hooks.ps1", ...args],
+  })
+})
+
+// Live round trip through a real PowerShell: the Windows argv shape reaches a recording
+// hooks.ps1, the payload arrives on stdin, and its stdout decision is parsed. Skipped when
+// pwsh is not installed.
+test("runs hooks.ps1 through PowerShell and parses its decision", { skip: !hasPwsh() }, async () => {
+  const home = withHome((h) => {
+    const policies = path.join(h, "1.4.0+abc", "policies")
+    fs.mkdirSync(policies, { recursive: true })
+    fs.writeFileSync(path.join(h, "current"), "1.4.0+abc\n")
+    fs.writeFileSync(path.join(policies, "policies.json"), policy())
+    fs.writeFileSync(
+      path.join(policies, "hooks.ps1"),
+      [
+        "$payload = [Console]::In.ReadToEnd()",
+        "$rec = @{ args = @($args); payload = $payload; home = $env:ARMOR1_HOME }",
+        "$rec | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'seen.json')",
+        '@{ decision = "deny"; reason = "ps1 says no" } | ConvertTo-Json -Compress',
+        "exit 0",
+      ].join("\n"),
+    )
+  })
+  const load = loadConfig({ ARMOR1_HOME: home }, "win32")
+  assert.equal(load.kind, "ok")
+  if (load.kind !== "ok") return
+  assert.equal(load.config.hooksPath, path.join(home, "1.4.0+abc", "policies", "hooks.ps1"))
+
+  const payload = { armor1: { section: "command_execution" }, command: "rm -rf /" } as unknown as HookPayload
+  const decision = await runHook(load.config, "command_execution", payload, (p, a) => spawnSpec(p, a, "win32", "pwsh"))
+  assert.deepEqual(decision, { kind: "deny", reason: "ps1 says no" })
+
+  const seen = JSON.parse(fs.readFileSync(path.join(home, "1.4.0+abc", "policies", "seen.json"), "utf8"))
+  assert.deepEqual(seen.args, ["--policy", "opencode-policy", "--hook", "command_execution", "--policy-enabled", "--telemetry-enabled"])
+  assert.deepEqual(JSON.parse(seen.payload), payload)
+  assert.equal(seen.home, home)
 })
