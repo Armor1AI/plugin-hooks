@@ -46,6 +46,8 @@ export interface Runtime {
   readonly signals: SignalSink
   readonly directory: string
   readonly enabled: boolean
+  // The after hooks classify MCP tools too, so they need the same list evaluate uses.
+  readonly mcpServers: readonly string[]
   setMcpServers(names: readonly string[]): void
   send(section: Section, payload: HookPayload): Promise<Decision | undefined>
   evaluate(ctx: BuildContext, args: Record<string, unknown>, tools: ToolTables): Promise<string | undefined>
@@ -135,6 +137,9 @@ export function createRuntime(directory: string): Runtime {
     directory,
     get enabled() {
       return config !== undefined
+    },
+    get mcpServers() {
+      return mcpServers
     },
     setMcpServers(names) {
       mcpServers = names

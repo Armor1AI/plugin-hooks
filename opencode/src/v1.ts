@@ -124,7 +124,7 @@ export const Armor1Plugin = async ({ directory }: PluginInput) => {
       })
 
       await rt.emit(async () => {
-        const classification = classifyAfter(input.tool, [], V1_TOOLS)
+        const classification = classifyAfter(input.tool, rt.mcpServers, V1_TOOLS)
         if (classification.kind === "none") return
 
         const ctx = context(input.sessionID, input.tool, input.callID)

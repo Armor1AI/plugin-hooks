@@ -1,5 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { Armor1Plugin } from "../src/v1.ts"
 import { createLedger, modelName } from "../src/runtime.ts"
 
@@ -145,4 +148,31 @@ test("tool.execute.before does not block when the adapter is disabled", async ()
   await assert.doesNotReject(() =>
     hooks["tool.execute.before"]!({ tool: "bash", sessionID: "s", callID: "c" }, { args: { command: "rm -rf /" } }),
   )
+})
+
+// The after hook classifies MCP tools with the server list too. It used to be handed an
+// empty list, so an MCP call was reported on the way in (mcp) but never on the way out
+// (post_mcp). Drives a real recording hooks.sh so the sent sections are observed.
+test("V1 after hook resolves an MCP tool and sends post_mcp", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "armor1-v1-mcp-"))
+  const policies = path.join(home, "current", "policies")
+  fs.mkdirSync(policies, { recursive: true })
+  fs.writeFileSync(path.join(policies, "policies.json"), JSON.stringify({
+    telemetry_engine: "interpreter",
+    policies: { "opencode-policy": { spec_uname: "opencode-policy", remediation_mode: true, telemetry_mode: true } },
+  }))
+  const log = path.join(home, "sections.log")
+  fs.writeFileSync(path.join(policies, "hooks.sh"),
+    `#!/bin/bash\nwhile [[ $# -gt 0 ]]; do case "$1" in --hook) echo "$2" >> ${log}; shift 2 ;; *) shift ;; esac; done\ncat >/dev/null\nprintf '{"decision":"allow"}\\n'\n`)
+  fs.chmodSync(path.join(policies, "hooks.sh"), 0o755)
+  process.env["ARMOR1_HOME"] = home
+
+  const hooks = await Armor1Plugin({ directory: "/work" })
+  await hooks["config"]!({ mcp: { "notion-server": { command: "x" } } })
+  const call = { sessionID: "s", tool: "notion-server_API-get-self", callID: "c1", args: {} }
+  await hooks["tool.execute.before"]!(call, { args: {} })
+  await hooks["tool.execute.after"]!(call, { output: "ok" })
+
+  const sections = fs.readFileSync(log, "utf8").trim().split("\n")
+  assert.deepEqual(sections, ["mcp", "post_mcp"], `sections: ${JSON.stringify(sections)}`)
 })

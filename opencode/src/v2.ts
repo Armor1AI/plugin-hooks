@@ -239,7 +239,7 @@ export function createV2Setup() {
       })
 
       await rt.emit(async () => {
-        const classification = classifyAfter(event.tool, [], V2_TOOLS)
+        const classification = classifyAfter(event.tool, rt.mcpServers, V2_TOOLS)
         if (classification.kind === "none") return
 
         const ctxBuild = context(event.sessionID, event.tool, event.id, event.messageID)
