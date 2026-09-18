@@ -55,6 +55,8 @@ export type PatchOp = "add" | "update" | "delete" | "move"
 // Everything the plugin needs, derived from policies.json.
 export interface AdapterConfig {
   readonly hooksPath: string
+  // What this agent layout needs on the runner's environment, beyond the three below.
+  readonly hookEnv: Readonly<Record<string, string>>
   readonly armorHome: string
   readonly settingsFile: string
   readonly telemetryEngine: string

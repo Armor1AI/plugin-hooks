@@ -20,14 +20,15 @@ const policy = (over: Record<string, unknown> = {}) =>
     ...over,
   })
 
-const candidate = (home = "/opt/armor1") => ({
+const candidate = (home = "/opt/armor1", layout: "script" | "sensor" = "script") => ({
   home,
-  policiesDir: `${home}/1.4.0+abc/policies`,
-  file: `${home}/1.4.0+abc/policies/policies.json`,
+  build: `${home}/1.4.0+abc`,
+  layout,
+  file: layout === "sensor" ? `${home}/policies/policies.json` : `${home}/1.4.0+abc/policies/policies.json`,
 })
 
-const ok = (raw: string, home = "/opt/armor1") => {
-  const parsed = parseConfig(raw, candidate(home))
+const ok = (raw: string, home = "/opt/armor1", layout: "script" | "sensor" = "script") => {
+  const parsed = parseConfig(raw, candidate(home, layout))
   assert.ok(!("kind" in parsed), `expected a config, got ${JSON.stringify(parsed)}`)
   return parsed
 }
@@ -75,6 +76,7 @@ test("candidates uses the resolved build, not a literal current directory", () =
   const found = candidates({ ARMOR1_HOME: home })
   assert.equal(found[0]?.file, path.join(home, "1.4.0+abc", "policies", "policies.json"))
   assert.equal(found[0]?.home, home)
+  assert.equal(found[0]?.layout, "script")
 })
 
 test("a home with no pointer contributes no candidate", () => {
@@ -88,6 +90,7 @@ test("derives every path from the build the pointer resolved to", () => {
   assert.equal(config.settingsFile, "/opt/armor1/config/settings.json")
   assert.equal(config.armorHome, "/opt/armor1")
   assert.equal(config.specUname, "opencode-policy")
+  assert.deepEqual(config.hookEnv, {})
 })
 
 test("takes the modes from the policy entry, not from us", () => {
@@ -216,6 +219,83 @@ test("spawnSpec wraps the runner in a hidden non-interactive PowerShell on win32
     argv: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\p\\hooks.ps1", ...args],
     detached: false,
   })
+})
+
+// armor1-sensor: the document moves out of the build, the runner moves into bin/ and is
+// renamed, and two more variables are required or it refuses to start.
+
+test("offers both agent layouts, 1.x first", () => {
+  const home = withHome((h) => {
+    fs.mkdirSync(path.join(h, "1.4.0+abc"), { recursive: true })
+    fs.writeFileSync(path.join(h, "current"), "1.4.0+abc\n")
+  })
+  assert.deepEqual(
+    candidates({ ARMOR1_HOME: home })
+      .filter((c) => c.home === home)
+      .map((c) => [c.layout, c.file]),
+    [
+      ["script", path.join(home, "1.4.0+abc", "policies", "policies.json")],
+      ["sensor", path.join(home, "policies", "policies.json")],
+    ],
+  )
+})
+
+test("the sensor runner is bin/hooks.bash and is told where the payload and libs are", () => {
+  const config = ok(policy(), "/opt/armor1", "sensor")
+  assert.equal(config.hooksPath, "/opt/armor1/1.4.0+abc/bin/hooks.bash")
+  assert.deepEqual(config.hookEnv, {
+    ARMOR1_PAYLOAD_DIR: "/opt/armor1/1.4.0+abc",
+    ARMOR1_LIB_DIR: "/opt/armor1/1.4.0+abc/lib",
+  })
+
+  const win = parseConfig(policy(), candidate("/opt/armor1", "sensor"), "win32")
+  assert.ok(!("kind" in win))
+  assert.equal(win.hooksPath, "/opt/armor1/1.4.0+abc/bin/hooks.ps1")
+})
+
+test("a sensor device is read from state, since its build holds no document", () => {
+  const home = withHome((h) => {
+    fs.mkdirSync(path.join(h, "1.4.0+abc", "bin"), { recursive: true })
+    fs.mkdirSync(path.join(h, "policies"), { recursive: true })
+    fs.writeFileSync(path.join(h, "current"), "1.4.0+abc\n")
+    fs.writeFileSync(path.join(h, "policies", "policies.json"), policy())
+  })
+  const load = loadConfig({ ARMOR1_HOME: home })
+  assert.equal(load.kind, "ok")
+  if (load.kind !== "ok") return
+  assert.equal(load.config.hooksPath, path.join(home, "1.4.0+abc", "bin", "hooks.bash"))
+  assert.equal(load.config.hookEnv["ARMOR1_PAYLOAD_DIR"], path.join(home, "1.4.0+abc"))
+})
+
+// The variables the sensor fails by name without have to actually reach the process.
+test("a sensor hook is spawned with the payload and lib directories set", async () => {
+  const home = withHome((h) => {
+    const bin = path.join(h, "1.4.0+abc", "bin")
+    fs.mkdirSync(bin, { recursive: true })
+    fs.mkdirSync(path.join(h, "policies"), { recursive: true })
+    fs.writeFileSync(path.join(h, "current"), "1.4.0+abc\n")
+    fs.writeFileSync(path.join(h, "policies", "policies.json"), policy())
+    fs.writeFileSync(
+      path.join(bin, "hooks.bash"),
+      [
+        "#!/usr/bin/env bash",
+        'echo "$ARMOR1_PAYLOAD_DIR" > "$(dirname "$0")/seen.txt"',
+        'echo "$ARMOR1_LIB_DIR" >> "$(dirname "$0")/seen.txt"',
+        "echo '{\"decision\":\"deny\",\"reason\":\"sensor says no\"}'",
+      ].join("\n"),
+      { mode: 0o755 },
+    )
+  })
+  const load = loadConfig({ ARMOR1_HOME: home })
+  assert.equal(load.kind, "ok")
+  if (load.kind !== "ok") return
+
+  const payload = { armor1: { section: "command_execution" } } as unknown as HookPayload
+  const decision = await runHook(load.config, "command_execution", payload)
+  assert.deepEqual(decision, { kind: "deny", reason: "sensor says no" })
+
+  const seen = fs.readFileSync(path.join(home, "1.4.0+abc", "bin", "seen.txt"), "utf8").trim().split("\n")
+  assert.deepEqual(seen, [path.join(home, "1.4.0+abc"), path.join(home, "1.4.0+abc", "lib")])
 })
 
 // Live round trip through a real PowerShell: the Windows argv shape reaches a recording

@@ -19,9 +19,16 @@ export type ConfigLoad =
   | { readonly kind: "missing"; readonly searched: readonly string[] }
   | { readonly kind: "invalid"; readonly path: string; readonly reason: string }
 
+// The two agent layouts a device can be running. 1.x keeps the policy document inside
+// the build and runs policies/hooks.sh; armor1-sensor keeps it in state beside the build
+// and runs bin/hooks.bash, which refuses to start without ARMOR1_PAYLOAD_DIR and
+// ARMOR1_LIB_DIR.
+type Layout = "script" | "sensor"
+
 interface Candidate {
   readonly home: string
-  readonly policiesDir: string
+  readonly build: string
+  readonly layout: Layout
   readonly file: string
 }
 
@@ -59,9 +66,28 @@ export function candidates(env: NodeJS.ProcessEnv = process.env): Candidate[] {
   return homes.flatMap((home) => {
     const build = currentBuildDir(home)
     if (build === undefined) return []
-    const policiesDir = path.join(build, "policies")
-    return [{ home, policiesDir, file: path.join(policiesDir, "policies.json") }]
+    // 1.x first: on a device running it nothing here changes, and the sensor keeps no
+    // document inside the build, so the two can never answer for each other.
+    return [
+      { home, build, layout: "script" as const, file: path.join(build, "policies", "policies.json") },
+      { home, build, layout: "sensor" as const, file: path.join(home, "policies", "policies.json") },
+    ]
   })
+}
+
+// Programs are state in the sensor, so its runner sits in the build's bin/ rather than
+// beside the document, and keeps the extension its source has.
+function runnerFor(candidate: Candidate, platform: NodeJS.Platform): string {
+  const dir = candidate.layout === "sensor" ? "bin" : "policies"
+  const name = platform === "win32" ? "hooks.ps1" : candidate.layout === "sensor" ? "hooks.bash" : "hooks.sh"
+  return path.join(candidate.build, dir, name)
+}
+
+// Nothing extra for 1.x. Its runner works out its own payload directory and falls back to
+// one derived from its location, so handing it ours would point it at the wrong tree.
+function hookEnvFor(candidate: Candidate): Record<string, string> {
+  if (candidate.layout !== "sensor") return {}
+  return { ARMOR1_PAYLOAD_DIR: candidate.build, ARMOR1_LIB_DIR: path.join(candidate.build, "lib") }
 }
 
 export function parseConfig(
@@ -87,7 +113,8 @@ export function parseConfig(
   const engine = parsed["telemetry_engine"]
 
   return {
-    hooksPath: path.join(candidate.policiesDir, platform === "win32" ? "hooks.ps1" : "hooks.sh"),
+    hooksPath: runnerFor(candidate, platform),
+    hookEnv: hookEnvFor(candidate),
     armorHome: candidate.home,
     settingsFile: path.join(candidate.home, "config", "settings.json"),
     telemetryEngine: typeof engine === "string" && engine !== "" ? engine : "interpreter",
@@ -161,6 +188,7 @@ export function runHook(
       ARMOR1_TELEMETRY_ENGINE: config.telemetryEngine,
       ARMOR1_HOME: config.armorHome,
       ARMOR1_SETTINGS_FILE: config.settingsFile,
+      ...config.hookEnv,
     }
 
     let child
