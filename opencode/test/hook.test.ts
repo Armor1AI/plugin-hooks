@@ -332,3 +332,46 @@ test("runs hooks.ps1 through PowerShell and parses its decision", { skip: !hasPw
   assert.deepEqual(JSON.parse(seen.payload), payload)
   assert.equal(seen.home, home)
 })
+
+// The same round trip in the sensor's layout: the document in state, the runner in bin/,
+// and the two variables it refuses to start without read from inside the process. This is
+// the combination a Windows device runs, and the one whose failure is silent.
+test("runs the sensor's hooks.ps1 through PowerShell with every variable it requires", { skip: !hasPwsh() }, async () => {
+  const home = withHome((h) => {
+    const bin = path.join(h, "1.4.0+abc", "bin")
+    fs.mkdirSync(bin, { recursive: true })
+    fs.mkdirSync(path.join(h, "policies"), { recursive: true })
+    fs.writeFileSync(path.join(h, "current"), "1.4.0+abc\n")
+    fs.writeFileSync(path.join(h, "policies", "policies.json"), policy())
+    fs.writeFileSync(
+      path.join(bin, "hooks.ps1"),
+      [
+        "$payload = [Console]::In.ReadToEnd()",
+        "$rec = @{",
+        "  args = @($args); payload = $payload; home = $env:ARMOR1_HOME",
+        "  payloadDir = $env:ARMOR1_PAYLOAD_DIR; libDir = $env:ARMOR1_LIB_DIR",
+        "  settings = $env:ARMOR1_SETTINGS_FILE; engine = $env:ARMOR1_TELEMETRY_ENGINE",
+        "}",
+        "$rec | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'seen.json')",
+        '@{ decision = "deny"; reason = "sensor ps1 says no" } | ConvertTo-Json -Compress',
+        "exit 0",
+      ].join("\n"),
+    )
+  })
+  const load = loadConfig({ ARMOR1_HOME: home }, "win32")
+  assert.equal(load.kind, "ok")
+  if (load.kind !== "ok") return
+  assert.equal(load.config.hooksPath, path.join(home, "1.4.0+abc", "bin", "hooks.ps1"))
+
+  const payload = { armor1: { section: "command_execution" }, command: "rm -rf /" } as unknown as HookPayload
+  const decision = await runHook(load.config, "command_execution", payload, (p, a) => spawnSpec(p, a, "win32", "pwsh"))
+  assert.deepEqual(decision, { kind: "deny", reason: "sensor ps1 says no" })
+
+  const seen = JSON.parse(fs.readFileSync(path.join(home, "1.4.0+abc", "bin", "seen.json"), "utf8"))
+  assert.deepEqual(seen.args, ["--policy", "opencode-policy", "--hook", "command_execution", "--policy-enabled", "--telemetry-enabled"])
+  assert.equal(seen.home, home)
+  assert.equal(seen.payloadDir, path.join(home, "1.4.0+abc"))
+  assert.equal(seen.libDir, path.join(home, "1.4.0+abc", "lib"))
+  assert.equal(seen.settings, path.join(home, "config", "settings.json"))
+  assert.equal(seen.engine, "interpreter")
+})
