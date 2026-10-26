@@ -9,6 +9,7 @@ import {
   buildStop,
   buildUsage,
   classifyAfter,
+  shellExitCode,
   type BuildContext,
 } from "./event.ts"
 import { createAccumulator, createRuntime, errorDetails } from "./runtime.ts"
@@ -183,7 +184,8 @@ export function createV2Setup() {
         const result =
           classification.kind === "mcp"
             ? buildAfterMcp(ctxBuild, classification.resolution, argsOf(event.input), event.result)
-            : buildAfter(ctxBuild, classification.section, argsOf(event.input))
+            : buildAfter(ctxBuild, classification.section, argsOf(event.input),
+              event.tool === "shell" && event.status === "completed" ? shellExitCode(event.result) : null)
 
         for (const signal of result.signals) rt.signals.record(signal)
         for (const payload of result.payloads) await rt.send(classification.section, payload)

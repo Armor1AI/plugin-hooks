@@ -302,6 +302,38 @@ const busSetup = async (home: string, events: unknown[] = TURN, directory = "/wo
   return { registered, cleanup, sendTurn: async () => { open(); await drained } }
 }
 
+test("V2 before and after hooks send one call ID and a bounded shell result", async () => {
+  const rig = busRig()
+  const captured = path.join(rig.home, "payloads.jsonl")
+  const hook = path.join(rig.home, "current", "policies", "hooks.sh")
+  fs.writeFileSync(hook, `#!/bin/bash\ncat >> '${captured}'\nprintf '\\n' >> '${captured}'\nprintf '{"decision":"allow"}\\n'\n`)
+  const { registered, cleanup } = await busSetup(rig.home, [])
+  try {
+    const base = { tool: "shell", sessionID: "s", messageID: "m", agent: "build", id: "call-42", input: { command: "false" } }
+    await registered.tool["execute.before"]!(base)
+    for (const [tool, status, metadata] of [
+      ["shell", "completed", { status: "completed", exit: 42 }],
+      ["shell", "completed", { status: "completed", exit: 0 }],
+      ["shell", "completed", { status: "running", exit: 0 }],
+      ["shell", "error", { status: "completed", exit: 1 }],
+      ["execute", "completed", { status: "completed", exit: 1 }],
+    ]) {
+      await registered.tool["execute.after"]!({ ...base, tool, status,
+        result: { metadata, content: [{ type: "text", text: "PRIVATE-OUTPUT" }] } })
+    }
+    const text = fs.readFileSync(captured, "utf8")
+    assert.ok(!text.includes("PRIVATE-OUTPUT"))
+    const records = text.trim().split("\n").map((line: string) => JSON.parse(line))
+    assert.equal(records.length, 6)
+    assert.ok(records.every((row) => row.call_id === "call-42" && row.session_id === "s"))
+    assert.equal(records[0].armor1.section, "command_execution")
+    assert.deepEqual(records.slice(1).map((row) => row.tool_response),
+      [{ exit_code: 42 }, { exit_code: 0 }, { exit_code: null }, { exit_code: null }, { exit_code: null }])
+  } finally {
+    await cleanup()
+  }
+})
+
 test("a copy that was never dispatched a hook reports nothing", async () => {
   const rig = busRig()
   const { cleanup, sendTurn } = await busSetup(rig.home)

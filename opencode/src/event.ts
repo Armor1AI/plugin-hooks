@@ -14,7 +14,7 @@ import type {
   UsageHookPayload,
   UsageRow,
 } from "./types.ts"
-import { type McpResolution, resolveMcpTool, scanPatch, toAbsolute } from "./normalize.ts"
+import { type McpResolution, isRecord, resolveMcpTool, scanPatch, toAbsolute } from "./normalize.ts"
 
 // ---------------------------------------------------------------------------
 // Routing a tool call to a policy section
@@ -337,10 +337,20 @@ export function buildAfterMcp(
   }
 }
 
+export function shellExitCode(result: unknown): number | null {
+  if (!isRecord(result)) return null
+  const metadata = result["metadata"]
+  if (!isRecord(metadata) || metadata["status"] !== "completed") return null
+  if (metadata["timeout"] === true || metadata["signal"]) return null
+  const exit = metadata["exit"]
+  return typeof exit === "number" && Number.isSafeInteger(exit) && exit >= 0 && exit <= 4294967295 ? exit : null
+}
+
 export function buildAfter(
   ctx: BuildContext,
   section: PostToolSection,
   args: Readonly<Record<string, unknown>>,
+  exitCode: number | null = null,
 ): BuildResult<TelemetrySection> {
   if (section === "post_shell_execution") {
     return {
@@ -349,7 +359,7 @@ export function buildAfter(
         toolPayload(ctx, "PostToolUse", { command: str(args, ...COMMAND_KEYS) ?? "" }, {
           section,
           opencode_tool: ctx.tool,
-        }),
+        }, { exit_code: exitCode }),
       ],
       signals: [],
     }
