@@ -1,6 +1,31 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { build, buildAfter, buildError, buildPrompt, buildSessionStart, buildStop, classify, classifyAfter, usageRecord } from "../src/event.ts"
+import { build, buildAfter, buildError, buildPrompt, buildSessionStart, buildStop, classify, classifyAfter, shellExitCode, usageRecord } from "../src/event.ts"
+
+test("only completed shell metadata supplies a numeric exit code", () => {
+  for (const exit of [0, 1, 42, 127, 4294967295]) {
+    assert.equal(shellExitCode({ metadata: { status: "completed", exit } }), exit)
+  }
+  for (const exit of [null, undefined, "1", true, -1, 1.5, Infinity, 4294967296]) {
+    assert.equal(shellExitCode({ metadata: { status: "completed", exit } }), null)
+  }
+  for (const result of [null, "Exit code 42", {}, { metadata: null },
+    { metadata: { status: "running", exit: 0 } },
+    { metadata: { status: "completed", exit: 1, timeout: true } },
+    { metadata: { status: "completed", exit: 1, signal: "SIGTERM" } }]) {
+    assert.equal(shellExitCode(result), null)
+  }
+})
+
+test("a shell completion keeps correlation and only bounded outcome fields", () => {
+  const result = buildAfter({ tool: "shell", sessionID: "s", turnID: "t", callID: "c", cwd: "/work" },
+    "post_shell_execution", { command: "false" }, 42, false)
+  assert.equal(result.payloads[0]?.call_id, "c")
+  assert.equal(result.payloads[0]?.session_id, "s")
+  assert.deepEqual(result.payloads[0]?.tool_response, { exit_code: 42, tool_use_failed: false })
+  assert.deepEqual(buildAfter({ tool: "bash", sessionID: "s", turnID: "t", callID: "c", cwd: "/work" },
+    "post_shell_execution", { command: "false" }).payloads[0]?.tool_response, { exit_code: null, tool_use_failed: null })
+})
 
 // Routing
 
