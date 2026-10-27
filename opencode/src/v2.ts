@@ -185,7 +185,8 @@ export function createV2Setup() {
           classification.kind === "mcp"
             ? buildAfterMcp(ctxBuild, classification.resolution, argsOf(event.input), event.result)
             : buildAfter(ctxBuild, classification.section, argsOf(event.input),
-              event.tool === "shell" && event.status === "completed" ? shellExitCode(event.result) : null)
+              event.tool === "shell" && event.status === "completed" ? shellExitCode(event.result) : null,
+              event.status === "error" ? true : event.status === "completed" ? false : null)
 
         for (const signal of result.signals) rt.signals.record(signal)
         for (const payload of result.payloads) await rt.send(classification.section, payload)

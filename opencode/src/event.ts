@@ -351,6 +351,7 @@ export function buildAfter(
   section: PostToolSection,
   args: Readonly<Record<string, unknown>>,
   exitCode: number | null = null,
+  toolUseFailed: boolean | null = null,
 ): BuildResult<TelemetrySection> {
   if (section === "post_shell_execution") {
     return {
@@ -359,7 +360,7 @@ export function buildAfter(
         toolPayload(ctx, "PostToolUse", { command: str(args, ...COMMAND_KEYS) ?? "" }, {
           section,
           opencode_tool: ctx.tool,
-        }, { exit_code: exitCode }),
+        }, { exit_code: exitCode, tool_use_failed: toolUseFailed }),
       ],
       signals: [],
     }

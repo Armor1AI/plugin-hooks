@@ -17,14 +17,14 @@ test("only completed shell metadata supplies a numeric exit code", () => {
   }
 })
 
-test("a shell completion keeps correlation and only the exit scalar", () => {
+test("a shell completion keeps correlation and only bounded outcome fields", () => {
   const result = buildAfter({ tool: "shell", sessionID: "s", turnID: "t", callID: "c", cwd: "/work" },
-    "post_shell_execution", { command: "false" }, 42)
+    "post_shell_execution", { command: "false" }, 42, false)
   assert.equal(result.payloads[0]?.call_id, "c")
   assert.equal(result.payloads[0]?.session_id, "s")
-  assert.deepEqual(result.payloads[0]?.tool_response, { exit_code: 42 })
+  assert.deepEqual(result.payloads[0]?.tool_response, { exit_code: 42, tool_use_failed: false })
   assert.deepEqual(buildAfter({ tool: "bash", sessionID: "s", turnID: "t", callID: "c", cwd: "/work" },
-    "post_shell_execution", { command: "false" }).payloads[0]?.tool_response, { exit_code: null })
+    "post_shell_execution", { command: "false" }).payloads[0]?.tool_response, { exit_code: null, tool_use_failed: null })
 })
 
 // Routing
